@@ -23,6 +23,11 @@
 //!
 //! If no `UCI_DIR` variable is set, rust-uci will compile against the distributed libuci source files licensed under GPLv2.
 //!
+//! ## require_system_libuci feature
+//!
+//! Enabling `require_system_libuci` disables the vendored build and requires `UCI_DIR` to point
+//! at an external libuci/libubox install (with `include/` and `lib/`).
+//!
 
 pub use bindings::{
     uci_add_delta_path, uci_add_list, uci_add_section, uci_alloc_context, uci_backend, uci_command,

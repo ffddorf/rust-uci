@@ -20,3 +20,6 @@ thiserror = "2"
 
 [dev-dependencies]
 tempfile = "3"
+[features]
+# Require dynamic linking from an external libuci/libubox (no vendored build).
+require_system_libuci = ["libuci-sys/require_system_libuci"]

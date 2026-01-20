@@ -10,6 +10,8 @@ use std::{env, fs};
 
 fn main() {
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap()).join("bindings.rs");
+    let require_system_libuci =
+        env::var_os("CARGO_FEATURE_REQUIRE_SYSTEM_LIBUCI").is_some();
 
     // don't run cmake if running for docs.rs
     if env::var("DOCS_RS").is_ok() {
@@ -27,6 +29,12 @@ fn main() {
     if let Ok(uci_dir) = env::var("UCI_DIR") {
         println!("cargo:rustc-link-search=native={}/lib", uci_dir);
         builder = builder.clang_arg(format!("-I{}/include", uci_dir));
+    } else if require_system_libuci {
+        panic!(
+            "require_system_libuci is enabled, but UCI_DIR is not set; refusing to build \
+             vendored libuci/libubox. Set UCI_DIR to the libuci prefix (with include/ and lib/), \
+             or disable the feature."
+        );
     } else {
         // otherwise build it from source
         let libubox = cmake::Config::new("libubox")

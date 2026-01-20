@@ -17,3 +17,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 [build-dependencies]
 bindgen = "^0.72.0"
 cmake = "^0.1.45"
+
+[features]
+# Require dynamic linking from an external libuci/libubox (no vendored build).
+require_system_libuci = []
