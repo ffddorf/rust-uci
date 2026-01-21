@@ -1,9 +1,13 @@
-rust-uci contains code from libuci, under the following licenses:
+rust-uci links against and generates bindings for libuci, which is licensed as follows:
 
-libuci:
-  ---------------
+libuci - Library for the Unified Configuration Interface
+Copyright (C) 2008 Felix Fietkau <nbd@openwrt.org>
 
-  Copyright (C) 2008-2014 OpenWrt.org
-  Copyright (C) 2016 LEDE project
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU Lesser General Public License version 2.1
+as published by the Free Software Foundation
 
-  This is free software, licensed under the GNU General Public License v2.
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Lesser General Public License for more details.

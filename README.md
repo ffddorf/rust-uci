@@ -8,9 +8,9 @@ OpenWRT libuci bindings for the Rust programming language.
 
 ## License
 
-libuci is licensed under GPLv2.
+The libuci C library [is licensed under LGPLv2.1](https://git.openwrt.org/?p=project/uci.git;a=blob;f=uci.h;h=b3ffdf9331b36bafae94ecb2a2bac9686900a8de;hb=HEAD#l1).
 
-The files in this repository are licensed under either of
+The files in this repository (i.e., rust-uci and libuci-sys) are licensed under either of
 
 * Apache License, Version 2.0
   ([LICENSE-APACHE](LICENSE-APACHE) or http://www.apache.org/licenses/LICENSE-2.0)

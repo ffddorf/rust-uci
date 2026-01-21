@@ -1,4 +1,5 @@
-// Copyright 2021, Benjamin Ludewig
+// Copyright (c) 2021-2022,2025-2026 Benjamin Ludewig, Hugo Hakim Damer and the
+// other rust-uci contributors.
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 //! FFI bindings to OpenWRT UCI
