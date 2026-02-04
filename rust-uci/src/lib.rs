@@ -19,7 +19,9 @@
 //!
 //! ## Vendored
 //!
-//! If no `UCI_DIR` variable is set, rust-uci will compile against the distributed libuci source files licensed under GPLv2.
+//! Enable the `vendored` feature to compile against the distributed libuci source files licensed under GPLv2.
+//! If `vendored` is disabled, `UCI_DIR` must point to an external libuci/libubox install
+//! (with `include/` and `lib/`).
 //!
 //! # Example Usage
 //!
