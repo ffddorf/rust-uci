@@ -437,11 +437,18 @@ impl Uci {
     ///
     /// If the entry does not exist an `Err` with [`Error::EntryNotFound`] is returned.
     pub fn get(&mut self, key: &str) -> Result<String> {
+        self.get_opt(key).and_then(|v| {
+            v.ok_or_else(|| Error::EntryNotFound {
+                entry_identifier: key.into(),
+            })
+        })
+    }
+
+    // Like [get], but returns Ok(None) if the key doesn't exist
+    pub fn get_opt(&mut self, key: &str) -> Result<Option<String>> {
         let ptr = libuci_locked!(self, { self.get_ptr(key)? });
         if ptr.flags & uci_ptr_UCI_LOOKUP_COMPLETE == 0 {
-            return Err(Error::EntryNotFound {
-                entry_identifier: key.into(),
-            });
+            return Ok(None);
         }
         let last = unsafe { *ptr.last };
         #[allow(non_upper_case_globals)]
@@ -471,7 +478,7 @@ impl Uci {
                     unsafe { CStr::from_ptr(opt.e.name) }.to_str()?,
                     value
                 );
-                Ok(String::from(value))
+                Ok(Some(String::from(value)))
             }
             uci_type_UCI_TYPE_SECTION => {
                 let sect = unsafe { *ptr.s };
@@ -487,7 +494,7 @@ impl Uci {
                     unsafe { CStr::from_ptr(sect.e.name) }.to_str()?,
                     typ
                 );
-                Ok(String::from(typ))
+                Ok(Some(String::from(typ)))
             }
             _ => Err(Error::Message(format!("unsupported type: {}", last.type_))),
         }
@@ -724,5 +731,25 @@ mod tests {
                 entry_identifier: "network".into()
             })
         )
+    }
+
+    #[test]
+    fn get_opt() {
+        let (mut uci, tmp) = setup_uci().unwrap();
+        let config_path = tmp.path().join("config/system");
+        std::fs::write(
+            &config_path,
+            "
+            config system
+	            option timezone 'UTC'
+            ",
+        )
+        .unwrap();
+
+        let tz = uci.get_opt("system.@system[0].timezone").unwrap();
+        assert_eq!(tz, Some("UTC".into()));
+
+        let hostname = uci.get_opt("system.@system[0].hostname").unwrap();
+        assert_eq!(hostname, None);
     }
 }
