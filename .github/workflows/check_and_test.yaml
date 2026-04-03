@@ -1,0 +1,38 @@
+name: check and test
+on:
+  pull_request:
+
+jobs:
+  cargo_check:
+    name: cargo check (clippy)
+    runs-on: ubuntu-24.04
+    steps:
+      - run: sudo apt update && sudo apt install build-essential cmake libclang-dev libjson-c-dev
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+      - run: cargo clippy --features vendored
+
+  cargo_test:
+    name: cargo test
+    runs-on: ubuntu-24.04
+    steps:
+      - run: sudo apt update && sudo apt install build-essential cmake libclang-dev libjson-c-dev
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: cargo test --features vendored
+
+  cargo_fmt:
+    name: cargo fmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt
+      - run: cargo fmt --check --verbose
