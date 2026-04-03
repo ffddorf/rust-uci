@@ -61,7 +61,7 @@ use libuci_sys::{
     uci_type_UCI_TYPE_SECTION, uci_unload,
 };
 use log::debug;
-use std::ffi::c_int;
+use std::ffi::{c_char, c_int};
 use std::sync::Mutex;
 use std::{
     ffi::{CStr, CString},
@@ -165,6 +165,28 @@ impl Drop for UciPtr {
     }
 }
 
+/// converts a raw char pointer into a &str ref
+///
+/// Used e.g. to read the `confdir` field
+/// of the raw `uci_context` struct as a string.
+///
+/// If the contained path is not valid UTF-8, an `Err`
+/// variant is returned.
+///
+/// # Safety
+/// `ptr` must point to a valid C-String.
+/// To be on the safer side, this method does check `ptr` for being non-null,
+/// and returns an `Err` otherwise.
+unsafe fn char_ptr_to_str<'a>(ptr: *mut c_char) -> Result<&'a str> {
+    if ptr.is_null() {
+        return Err(Error::Message("config dir was nullptr".into()));
+    }
+    // Safety: the ptr is not null.
+    // The safety assumption is that ptr points to
+    // a valid C-String
+    Ok(unsafe { CStr::from_ptr(ptr) }.to_str()?)
+}
+
 impl Uci {
     /// Creates a new UCI context.
     /// The C memory will be freed when the object is dropped.
@@ -206,6 +228,23 @@ impl Uci {
         })
     }
 
+    /// Gets the current confdir for the uci context.
+    ///
+    /// Default is `/etc/config`:
+    /// ```
+    /// use rust_uci::Uci;
+    /// let uci = Uci::new().unwrap();
+    /// assert_eq!(uci.get_config_dir(), Ok("/etc/config"));
+    /// ```
+    pub fn get_config_dir(&self) -> Result<&str> {
+        // Safety: self.ctx points to a valid uci_context struct
+        let confdir_ptr = (unsafe { *self.ctx }).confdir;
+        // Safety: the confdir_ptr is not null.
+        // We have to trust libuci that it will place a valid C-String
+        // at that ptr.
+        unsafe { char_ptr_to_str(confdir_ptr) }
+    }
+
     /// Sets the save directory of UCI, this is `/tmp/.uci` by default.
     pub fn set_save_dir(&mut self, save_dir: &str) -> Result<()> {
         let raw = CString::new(save_dir)?;
@@ -230,6 +269,23 @@ impl Uci {
                 )))
             }
         })
+    }
+
+    /// Get the current savedir for the uci context.
+    ///
+    /// Default is `/tmp/.uci`:
+    /// ```
+    /// use rust_uci::Uci;
+    /// let uci = Uci::new().unwrap();
+    /// assert_eq!(uci.get_save_dir(), Ok("/tmp/.uci"));
+    /// ```
+    pub fn get_save_dir(&self) -> Result<&str> {
+        // Safety: self.ctx points to a valid uci_context struct
+        let savedir_ptr = (unsafe { *self.ctx }).savedir;
+        // Safety: the savedir_ptr is not null.
+        // We have to trust libuci that it will place a valid C-String
+        // at that ptr.
+        unsafe { char_ptr_to_str(savedir_ptr) }
     }
 
     /// Delete an option or section in UCI.
@@ -576,6 +632,30 @@ mod tests {
         uci.set_config_dir(config_dir.as_os_str().to_str().unwrap())?;
         uci.set_save_dir(save_dir.as_os_str().to_str().unwrap())?;
         Ok((uci, tmp))
+    }
+
+    #[test]
+    fn get_after_set_config_dir() -> Result<()> {
+        let mut uci = Uci::new()?;
+
+        let tmp_dir = tempdir().unwrap();
+        let config_dir = tmp_dir.path().to_str().unwrap();
+
+        uci.set_config_dir(config_dir)?;
+        assert_eq!(uci.get_config_dir(), Ok(config_dir));
+        Ok(())
+    }
+
+    #[test]
+    fn get_after_set_save_dir() -> Result<()> {
+        let mut uci = Uci::new()?;
+
+        let tmp_dir = tempdir().unwrap();
+        let config_dir = tmp_dir.path().to_str().unwrap();
+
+        uci.set_save_dir(config_dir)?;
+        assert_eq!(uci.get_save_dir(), Ok(config_dir));
+        Ok(())
     }
 
     #[test]
