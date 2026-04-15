@@ -192,7 +192,7 @@ mod tests {
             next: ptr::null_mut(),
             prev: ptr::null_mut(),
         };
-        let mut e1 = uci_element {
+        let mut _e1 = uci_element {
             list: uci_list {
                 prev: ptr::null_mut(),
                 next: ptr::null_mut(),
@@ -200,23 +200,23 @@ mod tests {
             type_: 0,
             name: ptr::null_mut(),
         };
-        let mut e2 = e1;
-        let mut e3 = e2;
+        let mut _e2 = _e1;
+        let mut _e3 = _e2;
 
-        head.next = &raw mut e1.list;
-        head.prev = &raw mut e3.list;
+        head.next = &raw mut _e1.list;
+        head.prev = &raw mut _e3.list;
 
-        e1.list.prev = &raw mut head;
-        e1.list.next = &raw mut e2.list;
-        e1.type_ = 1;
+        _e1.list.prev = &raw mut head;
+        _e1.list.next = &raw mut _e2.list;
+        _e1.type_ = 1;
 
-        e2.list.prev = &raw mut e1.list;
-        e2.list.next = &raw mut e3.list;
-        e2.type_ = 2;
+        _e2.list.prev = &raw mut _e1.list;
+        _e2.list.next = &raw mut _e3.list;
+        _e2.type_ = 2;
 
-        e3.list.prev = &raw mut e2.list;
-        e3.list.next = &raw mut head;
-        e3.type_ = 3;
+        _e3.list.prev = &raw mut _e2.list;
+        _e3.list.next = &raw mut head;
+        _e3.type_ = 3;
 
         let mut visited = vec![];
         unsafe {
