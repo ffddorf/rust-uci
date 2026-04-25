@@ -175,7 +175,7 @@ impl DerefMut for UciPtr {
 /// and returns an `Err` otherwise.
 unsafe fn char_ptr_to_str<'a>(ptr: *mut c_char) -> Result<&'a str> {
     if ptr.is_null() {
-        return Err(Error::Message("config dir was nullptr".into()));
+        return Err(Error::Message("char* was nullptr".into()));
     }
     // Safety: the ptr is not null.
     // The safety assumption is that ptr points to
