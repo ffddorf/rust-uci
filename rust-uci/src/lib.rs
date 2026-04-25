@@ -66,6 +66,8 @@ use std::sync::Mutex;
 use std::{
     ffi::{CStr, CString},
     ops::{Deref, DerefMut},
+    os::unix::ffi::OsStrExt,
+    path::Path,
 };
 
 use crate::error::{Error, Result};
@@ -199,22 +201,24 @@ impl Uci {
     }
 
     /// Sets the config directory of UCI, this is `/etc/config` by default.
-    pub fn set_config_dir(&mut self, config_dir: &str) -> Result<()> {
+    pub fn set_config_dir(&mut self, config_dir: impl AsRef<Path>) -> Result<()> {
         libuci_locked!(self, {
             let result = {
-                let config_dir = CString::new(config_dir)?;
+                let config_dir = config_dir.as_ref().as_os_str();
+                let config_dir = CString::new(config_dir.as_bytes())?;
                 // Safety:
                 // * self.ctx points to a valid UCI context.
-                // * save_dir is a valid, null-terminated C-string.
+                // * config_dir is a valid, null-terminated C-string.
+                // * config_dir is a valid directory path.
                 unsafe { uci_set_confdir(self.ctx, config_dir.as_ptr()) }
             };
             if result == UCI_OK {
-                debug!("Set config dir to: {}", config_dir);
+                debug!("Set config dir to: {}", config_dir.as_ref().display());
                 Ok(())
             } else {
                 Err(Error::Message(format!(
                     "Cannot set config dir: {}, {}",
-                    config_dir,
+                    config_dir.as_ref().display(),
                     self.get_last_error()
                         .unwrap_or_else(|_| String::from("Unknown"))
                 )))
@@ -240,22 +244,24 @@ impl Uci {
     }
 
     /// Sets the save directory of UCI, this is `/tmp/.uci` by default.
-    pub fn set_save_dir(&mut self, save_dir: &str) -> Result<()> {
+    pub fn set_save_dir(&mut self, save_dir: impl AsRef<Path>) -> Result<()> {
         libuci_locked!(self, {
             let result = {
-                let save_dir = CString::new(save_dir)?;
+                let save_dir = save_dir.as_ref().as_os_str();
+                let save_dir = CString::new(save_dir.as_bytes())?;
                 // Safety:
                 // * self.ctx points to a valid UCI context.
                 // * save_dir is a valid, null-terminated C-string.
+                // * save_dir is a valid directory path.
                 unsafe { uci_set_savedir(self.ctx, save_dir.as_ptr()) }
             };
             if result == UCI_OK {
-                debug!("Set save dir to: {}", save_dir);
+                debug!("Set save dir to: {}", save_dir.as_ref().display());
                 Ok(())
             } else {
                 Err(Error::Message(format!(
                     "Cannot set save dir: {}, {}",
-                    save_dir,
+                    save_dir.as_ref().display(),
                     self.get_last_error()
                         .unwrap_or_else(|_| String::from("Unknown"))
                 )))
@@ -623,8 +629,8 @@ mod tests {
         std::fs::create_dir_all(&config_dir).unwrap();
         std::fs::create_dir_all(&save_dir).unwrap();
 
-        uci.set_config_dir(config_dir.as_os_str().to_str().unwrap())?;
-        uci.set_save_dir(save_dir.as_os_str().to_str().unwrap())?;
+        uci.set_config_dir(&config_dir)?;
+        uci.set_save_dir(&save_dir)?;
         Ok((uci, tmp))
     }
 
