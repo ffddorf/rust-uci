@@ -141,27 +141,23 @@ unsafe impl Sync for Uci {}
 /// - [`uci_context`] can be freed safely from another thread.
 unsafe impl Send for Uci {}
 
-/// Contains the native `uci_ptr` and it's raw `CString` key
-/// this is done so the raw `CString` stays alive until the `uci_ptr` is dropped
-struct UciPtr(uci_ptr, *mut std::os::raw::c_char);
+/// Contains the native `uci_ptr` and it's associated key.
+struct UciPtr {
+    ptr: uci_ptr,
+    _key: CString,
+}
 
 impl Deref for UciPtr {
     type Target = uci_ptr;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.ptr
     }
 }
 
 impl DerefMut for UciPtr {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl Drop for UciPtr {
-    fn drop(&mut self) {
-        drop(unsafe { CString::from_raw(self.1) });
+        &mut self.ptr
     }
 }
 
@@ -298,7 +294,7 @@ impl Uci {
     pub fn delete(&mut self, identifier: &str) -> Result<()> {
         let mut ptr = self.get_ptr(identifier)?;
         libuci_locked!(self, {
-            let result = unsafe { uci_delete(self.ctx, &mut ptr.0) };
+            let result = unsafe { uci_delete(self.ctx, ptr.deref_mut()) };
             if result != UCI_OK {
                 return Err(Error::Message(format!(
                     "Could not delete uci key: {}, {}, {}",
@@ -333,7 +329,7 @@ impl Uci {
     pub fn revert(&mut self, identifier: &str) -> Result<()> {
         libuci_locked!(self, {
             let mut ptr = self.get_ptr(identifier)?;
-            let result = unsafe { uci_revert(self.ctx, &mut ptr.0) };
+            let result = unsafe { uci_revert(self.ctx, ptr.deref_mut()) };
             if result != UCI_OK {
                 return Err(Error::Message(format!(
                     "Could not revert uci key: {}, {}, {}",
@@ -379,7 +375,7 @@ impl Uci {
                     identifier, val
                 )));
             }
-            let result = unsafe { uci_set(self.ctx, &mut ptr.0) };
+            let result = unsafe { uci_set(self.ctx, ptr.deref_mut()) };
             if result != UCI_OK {
                 return Err(Error::Message(format!(
                     "Could not set uci key: {}={}, {}, {}",
@@ -515,11 +511,14 @@ impl Uci {
             option: ptr::null(),
             value: ptr::null(),
         };
-        let raw = libuci_locked!(self, {
+        let key = libuci_locked!(self, {
             let raw = CString::new(identifier)?.into_raw();
             let result = unsafe { uci_lookup_ptr(self.ctx, &mut ptr, raw, true) };
             match result {
-                UCI_OK => (),
+                // Safety: raw was created from CString::into_raw.
+                // raw is not aliased / referenced from anywhere else for the lifetime of the
+                // reconstructed CString.
+                UCI_OK => unsafe { CString::from_raw(raw) },
                 UCI_ERR_NOTFOUND => {
                     return Err(Error::EntryNotFound {
                         entry_identifier: identifier.to_string(),
@@ -535,11 +534,10 @@ impl Uci {
                     )));
                 }
             }
-            raw
         });
         debug!("{:?}", ptr);
         if !ptr.last.is_null() {
-            Ok(UciPtr(ptr, raw))
+            Ok(UciPtr { ptr, _key: key })
         } else {
             Err(Error::Message(format!(
                 "Cannot access null value: {}",
