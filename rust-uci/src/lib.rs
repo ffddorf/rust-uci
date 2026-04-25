@@ -201,14 +201,12 @@ impl Uci {
     /// Sets the config directory of UCI, this is `/etc/config` by default.
     pub fn set_config_dir(&mut self, config_dir: &str) -> Result<()> {
         libuci_locked!(self, {
-            let result = unsafe {
-                let raw = CString::new(config_dir)?;
-                uci_set_confdir(
-                    self.ctx,
-                    raw.as_bytes_with_nul()
-                        .as_ptr()
-                        .cast::<std::os::raw::c_char>(),
-                )
+            let result = {
+                let config_dir = CString::new(config_dir)?;
+                // Safety:
+                // * self.ctx points to a valid UCI context.
+                // * save_dir is a valid, null-terminated C-string.
+                unsafe { uci_set_confdir(self.ctx, config_dir.as_ptr()) }
             };
             if result == UCI_OK {
                 debug!("Set config dir to: {}", config_dir);
@@ -243,15 +241,13 @@ impl Uci {
 
     /// Sets the save directory of UCI, this is `/tmp/.uci` by default.
     pub fn set_save_dir(&mut self, save_dir: &str) -> Result<()> {
-        let raw = CString::new(save_dir)?;
         libuci_locked!(self, {
-            let result = unsafe {
-                uci_set_savedir(
-                    self.ctx,
-                    raw.as_bytes_with_nul()
-                        .as_ptr()
-                        .cast::<std::os::raw::c_char>(),
-                )
+            let result = {
+                let save_dir = CString::new(save_dir)?;
+                // Safety:
+                // * self.ctx points to a valid UCI context.
+                // * save_dir is a valid, null-terminated C-string.
+                unsafe { uci_set_savedir(self.ctx, save_dir.as_ptr()) }
             };
             if result == UCI_OK {
                 debug!("Set save dir to: {}", save_dir);
