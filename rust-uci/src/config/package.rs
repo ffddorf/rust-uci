@@ -1,24 +1,31 @@
-use std::ffi::CStr;
+use std::{ffi::CStr, marker::PhantomData, ptr};
 
-use libuci_sys::{uci_element, uci_package, uci_to_package, uci_to_section};
+use libuci_sys::{uci_package, uci_to_section};
 
-use crate::{config::lookup_child, Result, Uci};
+use crate::{Result, Uci};
 
-use super::{section::Section, FromUciElement, NameOrRef};
+use super::{
+    lookup_child,
+    section::{Section, SectionRef},
+    NameOrRef, UciListIter,
+};
 
 #[derive(Clone)]
-pub struct PackageRef {
+pub struct PackageRef<'a> {
     pkg: *const uci_package,
+    /// lifetime of UCI context where we got pkg from
+    _lt: &'a PhantomData<()>,
 }
 
-impl From<*const uci_package> for PackageRef {
-    fn from(pkg: *const uci_package) -> Self {
-        Self { pkg }
+impl<'a> PackageRef<'a> {
+    pub(crate) unsafe fn new(pkg: *const uci_package) -> Self {
+        Self {
+            pkg,
+            _lt: &PhantomData,
+        }
     }
-}
 
-impl PackageRef {
-    pub fn get<'a>(self, uci: &'a mut Uci) -> Package<'a> {
+    pub fn get(self, uci: &'a mut Uci) -> Package<'a> {
         Package {
             uci,
             pkg: NameOrRef::Ref(self),
@@ -36,11 +43,11 @@ impl PackageRef {
 /// parent to different [Section]s
 pub struct Package<'a> {
     uci: &'a mut Uci,
-    pkg: NameOrRef<String, PackageRef>,
+    pkg: NameOrRef<String, PackageRef<'a>>,
 }
 
 impl<'a> Package<'a> {
-    pub(crate) fn new(uci: &'a mut Uci, pkg: NameOrRef<String, PackageRef>) -> Self {
+    pub(crate) fn new(uci: &'a mut Uci, pkg: NameOrRef<String, PackageRef<'a>>) -> Self {
         Self { uci, pkg }
     }
 
@@ -56,8 +63,8 @@ impl<'a> Package<'a> {
     /// also works if the section is not defined yet
     pub fn section(
         &'a mut self,
-        name: impl AsRef<str>,
         section_type: impl AsRef<str>,
+        name: impl AsRef<str>,
     ) -> Result<Section<'a>> {
         let name = name.as_ref();
         let section_type = section_type.as_ref();
@@ -74,24 +81,18 @@ impl<'a> Package<'a> {
         };
 
         let section = lookup_child(self.uci, &mut unsafe { *pkg.pkg }.sections, name)?
-            .map(|ptr| NameOrRef::Ref(unsafe { uci_to_section(ptr) }.into()))
+            .map(|ptr| NameOrRef::Ref(unsafe { SectionRef::new(pkg.pkg, uci_to_section(ptr)) }))
             .unwrap_or_else(|| NameOrRef::Name((name.to_owned(), section_type.to_owned())));
         Ok(Section::new(self.uci, self.pkg.clone(), section))
     }
 
     /// list all [Section]s in this package
-    pub fn sections(&'a mut self) -> Result<impl Iterator<Item = Section<'a>>> {
-        Ok(vec![].into_iter())
-    }
-}
-
-unsafe impl FromUciElement for PackageRef {
-    /// # Safety
-    /// - Caller must guarantee that elem contains a `uci_package`
-    /// - Caller must guarantee that elem is not null
-    unsafe fn from_uci_element(elem: *const uci_element) -> Self {
-        Self {
-            pkg: uci_to_package(elem),
-        }
+    pub fn sections(&'a mut self) -> impl Iterator<Item = SectionRef<'a>> {
+        let (pkg, list) = match &self.pkg {
+            NameOrRef::Name(_) => (ptr::null(), ptr::null()),
+            NameOrRef::Ref(pkg) => (pkg.pkg, &unsafe { *pkg.pkg }.sections as *const _),
+        };
+        UciListIter::new(list)
+            .map(move |elem| unsafe { SectionRef::new(pkg, uci_to_section(elem)) })
     }
 }
