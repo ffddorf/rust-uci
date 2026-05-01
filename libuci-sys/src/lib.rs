@@ -105,6 +105,16 @@ pub unsafe fn list_to_element(ptr: *const uci_list) -> *const uci_element {
     container_of!(ptr, uci_element, list)
 }
 
+/// casts an [`uci_element`] pointer to the containing [`uci_package`].
+///
+/// # Safety
+/// The caller must ensure that `ptr` points to an element which is member of an [`uci_package`].
+/// The `ptr` must not point to an element which is not contained in an uci_package.
+pub unsafe fn uci_to_package(ptr: *const uci_element) -> *const uci_package {
+    // safety: uci_package.e has type uci_element, ptr points to uci_element
+    container_of!(ptr, uci_package, e)
+}
+
 /// casts an [`uci_element`] pointer to the containing [`uci_section`].
 ///
 /// # Safety
