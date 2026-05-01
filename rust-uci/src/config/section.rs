@@ -1,27 +1,24 @@
-use std::{
-    ffi::CStr,
-    sync::{Arc, Mutex},
-};
+use std::ffi::CStr;
 
 use libuci_sys::uci_to_option;
 
-use crate::{Result, Uci};
+use crate::Result;
 
 use super::{
     option::Option,
-    ptr::{UciPtr, PTR_STAGE_SECTION},
+    ptr::{UciListIter, UciPtr, PTR_STAGE_SECTION},
 };
 
 /// represents a single section
 /// parent to different [Option]s
+// todo: get rid of const generic, use enum
 pub struct Section<const L: bool> {
-    uci: Arc<Mutex<Uci>>,
     ptr: UciPtr<PTR_STAGE_SECTION, L>,
 }
 
 impl<const L: bool> Section<L> {
-    pub(crate) fn new(uci: Arc<Mutex<Uci>>, ptr: UciPtr<PTR_STAGE_SECTION, L>) -> Self {
-        Self { uci, ptr }
+    pub(crate) fn new(ptr: UciPtr<PTR_STAGE_SECTION, L>) -> Self {
+        Self { ptr }
     }
 }
 
@@ -38,10 +35,9 @@ impl Section<true> {
 
     /// lists all options in this section
     pub fn options(&self) -> impl Iterator<Item = Option<true>> + use<'_> {
-        let uci = Arc::clone(&self.uci);
-        self.ptr.children().map(move |elem| {
+        let iter = unsafe { UciListIter::new(&(*self.ptr.s).options) };
+        iter.map(move |elem| {
             Option::new(
-                Arc::clone(&uci),
                 self.ptr
                     .with_option(unsafe { uci_to_option(elem).cast_mut() }),
             )
@@ -54,6 +50,6 @@ impl<const L: bool> Section<L> {
     /// also works if the option is not defined yet
     pub fn option(&self, name: impl AsRef<str>) -> Result<Option<false>> {
         let ptr = self.ptr.with_option_name(name)?;
-        Ok(Option::new(Arc::clone(&self.uci), ptr))
+        Ok(Option::new(ptr))
     }
 }

@@ -5,7 +5,7 @@ use std::{
     ops::{Deref, DerefMut},
     option::Option as StdOption,
     ptr,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use libuci_sys::{
@@ -16,15 +16,18 @@ use libuci_sys::{
 
 use crate::{config::handle_error, libuci_locked, Result, Uci};
 
-struct UciListIter<'a> {
+pub(super) struct UciListIter<'a> {
     list: *const uci_list,
+    ptr: *const uci_list,
     _lt: &'a PhantomData<()>,
 }
 
 impl<'a> UciListIter<'a> {
-    fn new(list: *const uci_list) -> Self {
+    /// Safety: list cannot be null
+    pub unsafe fn new(list: *const uci_list) -> Self {
         Self {
             list,
+            ptr: unsafe { *list }.next,
             _lt: &PhantomData,
         }
     }
@@ -34,19 +37,17 @@ impl<'a> Iterator for UciListIter<'a> {
     type Item = *const uci_element;
 
     fn next(&mut self) -> StdOption<Self::Item> {
-        if self.list.is_null() {
+        if self.ptr.is_null() {
+            return None;
+        }
+        if self.ptr == self.list {
             return None;
         }
 
-        let node = unsafe { (*self.list).next };
-        if node.is_null() {
-            return None;
-        }
-        if node.cast_const() == self.list {
-            return None;
-        }
+        let elem = unsafe { list_to_element(self.ptr) };
+        self.ptr = unsafe { *elem }.list.next;
 
-        Some(unsafe { list_to_element(node.cast_const()) })
+        Some(elem)
     }
 }
 
@@ -56,6 +57,7 @@ pub(crate) const PTR_STAGE_SECTION: usize = 2;
 pub(crate) const PTR_STAGE_OPTION: usize = 3;
 
 pub(crate) struct UciPtr<const S: usize, const L: bool> {
+    pub(crate) uci: Arc<Mutex<Uci>>,
     ptr: uci_ptr,
     data: Vec<Arc<CString>>,
 }
@@ -75,7 +77,7 @@ impl<const S: usize, const L: bool> DerefMut for UciPtr<S, L> {
 }
 
 impl UciPtr<PTR_STAGE_INIT, false> {
-    pub fn new() -> Self {
+    pub fn new(uci: Arc<Mutex<Uci>>) -> Self {
         let ptr = uci_ptr {
             target: uci_type_UCI_TYPE_UNSPEC,
             flags: 0,
@@ -89,6 +91,7 @@ impl UciPtr<PTR_STAGE_INIT, false> {
             value: ptr::null(),
         };
         Self {
+            uci,
             ptr,
             data: Vec::new(),
         }
@@ -98,8 +101,8 @@ impl UciPtr<PTR_STAGE_INIT, false> {
         let mut ptr = self.ptr.clone();
         ptr.target = uci_type_UCI_TYPE_PACKAGE;
         ptr.p = pkg;
-        ptr.last = &mut unsafe { *pkg }.e;
         UciPtr {
+            uci: Arc::clone(&self.uci),
             ptr,
             data: Vec::new(),
         }
@@ -114,6 +117,7 @@ impl UciPtr<PTR_STAGE_INIT, false> {
         ptr.target = uci_type_UCI_TYPE_PACKAGE;
         ptr.package = name.as_ptr();
         Ok(UciPtr {
+            uci: Arc::clone(&self.uci),
             ptr,
             data: vec![Arc::new(name)],
         })
@@ -125,8 +129,8 @@ impl UciPtr<PTR_STAGE_PACKAGE, true> {
         let mut ptr = self.ptr.clone();
         ptr.target = uci_type_UCI_TYPE_SECTION;
         ptr.s = section;
-        ptr.last = &mut unsafe { *section }.e;
         UciPtr {
+            uci: Arc::clone(&self.uci),
             ptr,
             data: self.data.iter().map(Arc::clone).collect(),
         }
@@ -143,6 +147,7 @@ impl<const L: bool> UciPtr<PTR_STAGE_PACKAGE, L> {
         ptr.target = uci_type_UCI_TYPE_SECTION;
         ptr.section = name.as_ptr();
         Ok(UciPtr {
+            uci: Arc::clone(&self.uci),
             ptr,
             data: self
                 .data
@@ -159,8 +164,8 @@ impl UciPtr<PTR_STAGE_SECTION, true> {
         let mut ptr = self.ptr.clone();
         ptr.target = uci_type_UCI_TYPE_OPTION;
         ptr.o = opt;
-        ptr.last = &mut unsafe { *opt }.e;
         UciPtr {
+            uci: Arc::clone(&self.uci),
             ptr,
             data: self.data.iter().map(Arc::clone).collect(),
         }
@@ -177,6 +182,7 @@ impl<const L: bool> UciPtr<PTR_STAGE_SECTION, L> {
         ptr.target = uci_type_UCI_TYPE_OPTION;
         ptr.option = name.as_ptr();
         Ok(UciPtr {
+            uci: Arc::clone(&self.uci),
             ptr,
             data: self
                 .data
@@ -189,7 +195,11 @@ impl<const L: bool> UciPtr<PTR_STAGE_SECTION, L> {
 }
 
 impl<const L: bool> UciPtr<PTR_STAGE_OPTION, L> {
-    pub fn with_update(&self, ptr: uci_ptr) -> UciPtr<PTR_STAGE_OPTION, true> {
+    pub fn with_update(
+        &self,
+        ptr: uci_ptr,
+        extra_data: impl Iterator<Item = CString>,
+    ) -> UciPtr<PTR_STAGE_OPTION, true> {
         if ptr.target != uci_type_UCI_TYPE_OPTION {
             panic!("Invalid target, expected Option, got {}", ptr.target);
         }
@@ -200,9 +210,31 @@ impl<const L: bool> UciPtr<PTR_STAGE_OPTION, L> {
             panic!("Invalid uci_ptr: lookup not complete");
         }
         UciPtr {
+            uci: Arc::clone(&self.uci),
             ptr,
-            data: self.data.iter().map(Arc::clone).collect(),
+            data: self
+                .data
+                .iter()
+                .map(Arc::clone)
+                .chain(extra_data.map(Arc::new))
+                .collect(),
         }
+    }
+}
+
+struct CapturingIter<T, I> {
+    inner: I,
+    capture: T,
+}
+
+impl<T, I> Iterator for CapturingIter<T, I>
+where
+    I: Iterator,
+{
+    type Item = I::Item;
+
+    fn next(&mut self) -> StdOption<Self::Item> {
+        self.inner.next()
     }
 }
 
@@ -210,21 +242,27 @@ impl<const S: usize> UciPtr<S, true> {
     pub fn name(&self) -> Result<&str> {
         Ok(unsafe { CStr::from_ptr((*self.ptr.last).name) }.to_str()?)
     }
-
-    pub fn children<'a>(&'a self) -> impl Iterator<Item = *const uci_element> + 'a {
-        UciListIter::new(&unsafe { *self.last }.list)
-    }
 }
 
 impl<const S: usize> UciPtr<S, false> {
-    pub fn lookup(&self, uci: &mut Uci) -> Result<StdOption<UciPtr<S, true>>> {
+    pub fn lookup(&self) -> Result<StdOption<UciPtr<S, true>>> {
         let mut ptr = self.ptr.clone();
+        let mut uci = self.uci.lock().unwrap();
         let result = libuci_locked!(uci, {
             unsafe { uci_lookup_ptr(uci.ctx, &mut ptr, ptr::null_mut(), true) }
         });
-        Ok(handle_error(uci, result)?.map(|_| UciPtr {
+        Ok(handle_error(&mut uci, result)?.map(|_| UciPtr {
+            uci: Arc::clone(&self.uci),
             ptr,
             data: self.data.iter().map(Arc::clone).collect(),
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn iterator() {
+        // let iter = unsafe { UciListIter::new(list) };
     }
 }

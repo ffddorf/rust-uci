@@ -53,11 +53,8 @@ impl Iterator for PackageIter {
         }
         self.ptr = unsafe { self.ptr.add(1) };
         let name = unsafe { CStr::from_ptr(name_ptr.cast()) }.to_str().unwrap();
-        let ptr = UciPtr::new();
-        Some(Package::new(
-            Arc::clone(&self.uci),
-            ptr.with_package_name(name).unwrap(),
-        ))
+        let ptr = UciPtr::new(Arc::clone(&self.uci));
+        Some(Package::new(ptr.with_package_name(name).unwrap()))
     }
 }
 
@@ -69,9 +66,9 @@ impl Config {
     /// return a single [Package] by its name
     /// also works if the package is not defined yet
     pub fn package<'a>(&self, name: impl AsRef<str>) -> Result<Package<false>> {
-        let ptr = ptr::UciPtr::new();
+        let ptr = ptr::UciPtr::new(Arc::clone(&self.uci));
         let ptr = ptr.with_package_name(name)?;
-        Ok(Package::new(Arc::clone(&self.uci), ptr))
+        Ok(Package::new(ptr))
     }
 
     /// list all [Package]s in the config
@@ -179,5 +176,37 @@ mod tests {
                 n => panic!("Unexpected name: {}", n),
             }
         }
+    }
+
+    #[test]
+    fn ptr_mutability() {
+        let (uci, tmp) = setup_uci().unwrap();
+        std::fs::write(
+            &tmp.path().join("config/wireless"),
+            "
+            config wifi-device 'pdev0'
+                    option channel 'auto'
+            ",
+        )
+        .unwrap();
+
+        let cfg: Config = uci.into();
+        let pkg = cfg.package("wireless").unwrap();
+        for section in pkg.sections().unwrap() {
+            let opt = section.option("channel").unwrap();
+            let updated = opt.set("foo").unwrap();
+            assert_eq!(opt.get().unwrap(), Some(updated.get().unwrap()));
+        }
+
+        let opt = cfg
+            .package("wireless")
+            .unwrap()
+            .section("wifi-device", "pdev1")
+            .unwrap()
+            .option("channel")
+            .unwrap();
+        let updated1 = opt.set("foo").unwrap();
+        let updated2 = opt.set("auto").unwrap();
+        println!("done!");
     }
 }

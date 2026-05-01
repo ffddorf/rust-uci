@@ -1,8 +1,8 @@
 use std::{
     borrow::Cow,
     ffi::{CStr, CString},
+    iter,
     option::Option as StdOption,
-    sync::{Arc, Mutex},
 };
 
 use libuci_sys::{
@@ -10,13 +10,13 @@ use libuci_sys::{
     uci_option_type_UCI_TYPE_STRING, uci_set,
 };
 
-use crate::{config::handle_error, error::Error, libuci_locked, Result, Uci};
+use crate::{config::handle_error, error::Error, libuci_locked, Result};
 
 use super::ptr::{UciPtr, PTR_STAGE_OPTION};
 
 /// represents an option within a [Section]
+// todo: get rid of const generic, use enum
 pub struct Option<const L: bool> {
-    uci: Arc<Mutex<Uci>>,
     ptr: UciPtr<PTR_STAGE_OPTION, L>,
 }
 
@@ -52,19 +52,16 @@ impl<const L: bool> Option<L> {
     /// sets the value of the option, overriding the previous value
     /// will create the [Package] or [Section] along the way if they do
     /// not exist
-    pub fn set(&mut self, value: impl AsRef<str>) -> Result<Option<true>> {
+    pub fn set(&self, value: impl AsRef<str>) -> Result<Option<true>> {
         let value = CString::new(value.as_ref())?;
         let mut ptr = self.ptr.clone();
         ptr.value = value.as_ptr();
 
-        let mut uci = self.uci.lock().unwrap();
+        let mut uci = self.ptr.uci.lock().unwrap();
         let result = libuci_locked!(uci, { unsafe { uci_set(uci.ctx, &mut ptr) } });
         handle_error(&mut uci, result)?;
 
-        Ok(Option::new(
-            Arc::clone(&self.uci),
-            self.ptr.with_update(ptr),
-        ))
+        Ok(Option::new(self.ptr.with_update(ptr, iter::once(value))))
     }
 
     /// adds a value to the existing value
@@ -78,23 +75,17 @@ impl<const L: bool> Option<L> {
         let mut ptr = self.ptr.clone();
         ptr.value = value.as_ptr();
 
-        let mut uci = self.uci.lock().unwrap();
+        let mut uci = self.ptr.uci.lock().unwrap();
         let result = libuci_locked!(uci, { unsafe { uci_add_list(uci.ctx, &mut ptr) } });
         handle_error(&mut uci, result)?;
 
-        Ok(Option::new(
-            Arc::clone(&self.uci),
-            self.ptr.with_update(ptr),
-        ))
+        Ok(Option::new(self.ptr.with_update(ptr, iter::once(value))))
     }
 }
 
 impl Option<false> {
-    pub(crate) fn new<const L: bool>(
-        uci: Arc<Mutex<Uci>>,
-        ptr: UciPtr<PTR_STAGE_OPTION, L>,
-    ) -> Option<L> {
-        Option { uci, ptr }
+    pub(crate) fn new<const L: bool>(ptr: UciPtr<PTR_STAGE_OPTION, L>) -> Option<L> {
+        Option { ptr }
     }
 
     /// name of the option
@@ -104,8 +95,7 @@ impl Option<false> {
 
     /// returns the current value of the option, None if not set
     pub fn get<'a>(&'a self) -> Result<StdOption<Value<'a>>> {
-        let mut uci = self.uci.lock().unwrap();
-        let ptr = match self.ptr.lookup(&mut uci)? {
+        let ptr = match self.ptr.lookup()? {
             Some(ptr) => ptr,
             None => return Ok(None),
         };
