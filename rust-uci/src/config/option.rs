@@ -1,64 +1,34 @@
 use std::{
-    borrow::Cow, collections::btree_map::Values, ffi::CStr, marker::PhantomData,
+    borrow::Cow,
+    ffi::{CStr, CString},
     option::Option as StdOption,
+    sync::{Arc, Mutex},
 };
 
 use libuci_sys::{
-    uci_foreach_element, uci_option, uci_option_type_UCI_TYPE_LIST, uci_option_type_UCI_TYPE_STRING,
+    uci_add_list, uci_foreach_element, uci_option_type_UCI_TYPE_LIST,
+    uci_option_type_UCI_TYPE_STRING, uci_set,
 };
 
-use crate::{config::NameOrRef, error::Error, Result, Uci};
+use crate::{config::handle_error, error::Error, libuci_locked, Result, Uci};
 
-pub struct OptionRef<'a> {
-    option: *const uci_option,
-    _lt: &'a PhantomData<()>,
-}
-
-impl<'a> OptionRef<'a> {
-    pub(crate) unsafe fn new(option: *const uci_option) -> Self {
-        Self {
-            option,
-            _lt: &PhantomData,
-        }
-    }
-
-    pub fn name(&self) -> Result<&str> {
-        let raw = unsafe { CStr::from_ptr((*self.option).e.name) };
-        Ok(raw.to_str()?)
-    }
-}
+use super::ptr::{UciPtr, PTR_STAGE_OPTION};
 
 /// represents an option within a [Section]
-pub struct Option<'a> {
-    uci: &'a mut Uci,
-    option: NameOrRef<String, OptionRef<'a>>,
+pub struct Option<const L: bool> {
+    uci: Arc<Mutex<Uci>>,
+    ptr: UciPtr<PTR_STAGE_OPTION, L>,
 }
 
-impl<'a> Option<'a> {
-    pub(crate) fn new(uci: &'a mut Uci, option: NameOrRef<String, OptionRef<'a>>) -> Self {
-        Self { uci, option }
-    }
-
-    /// name of the option
-    pub fn name(&mut self) -> Result<&str> {
-        match &self.option {
-            NameOrRef::Name(name) => Ok(name),
-            NameOrRef::Ref(opt) => opt.name(),
-        }
-    }
-
-    /// returns the current value of the option, None if not set
-    pub fn get(&'a mut self) -> Result<StdOption<Value<'a>>> {
-        let opt = match &self.option {
-            NameOrRef::Name(_) => return Ok(None),
-            NameOrRef::Ref(opt) => opt.option,
-        };
+impl<const L: bool> Option<L> {
+    fn get_impl<'a>(ptr: &UciPtr<PTR_STAGE_OPTION, true>) -> Result<Value<'a>> {
+        let opt = ptr.o;
 
         #[allow(non_upper_case_globals)]
         match unsafe { *opt }.type_ {
             uci_option_type_UCI_TYPE_STRING => {
                 let raw = unsafe { CStr::from_ptr((*opt).v.string) };
-                Ok(Some(Value::String(raw.to_str()?.into())))
+                Ok(Value::String(raw.to_str()?.into()))
             }
             uci_option_type_UCI_TYPE_LIST => {
                 let mut result = Vec::new();
@@ -68,12 +38,12 @@ impl<'a> Option<'a> {
                         result.push(raw);
                     })
                 };
-                Ok(Some(Value::List(
+                Ok(Value::List(
                     result
                         .into_iter()
                         .map(|cstr| cstr.to_str().map_err(Into::into).map(Into::into))
                         .collect::<Result<Vec<_>>>()?,
-                )))
+                ))
             }
             t => return Err(Error::Message(format!("Unexpected option type: {t}"))),
         }
@@ -82,8 +52,19 @@ impl<'a> Option<'a> {
     /// sets the value of the option, overriding the previous value
     /// will create the [Package] or [Section] along the way if they do
     /// not exist
-    pub fn set(&mut self, _value: Value<'static>) -> Result<()> {
-        todo!()
+    pub fn set(&mut self, value: impl AsRef<str>) -> Result<Option<true>> {
+        let value = CString::new(value.as_ref())?;
+        let mut ptr = self.ptr.clone();
+        ptr.value = value.as_ptr();
+
+        let mut uci = self.uci.lock().unwrap();
+        let result = libuci_locked!(uci, { unsafe { uci_set(uci.ctx, &mut ptr) } });
+        handle_error(&mut uci, result)?;
+
+        Ok(Option::new(
+            Arc::clone(&self.uci),
+            self.ptr.with_update(ptr),
+        ))
     }
 
     /// adds a value to the existing value
@@ -92,8 +73,55 @@ impl<'a> Option<'a> {
     /// - turn a single-value option into a list
     ///
     /// returns the resulting value
-    pub fn add_list(&'a mut self, _value: Value) -> Result<Value<'a>> {
-        todo!()
+    pub fn add_list<'a>(&'a self, value: impl AsRef<str>) -> Result<Option<true>> {
+        let value = CString::new(value.as_ref())?;
+        let mut ptr = self.ptr.clone();
+        ptr.value = value.as_ptr();
+
+        let mut uci = self.uci.lock().unwrap();
+        let result = libuci_locked!(uci, { unsafe { uci_add_list(uci.ctx, &mut ptr) } });
+        handle_error(&mut uci, result)?;
+
+        Ok(Option::new(
+            Arc::clone(&self.uci),
+            self.ptr.with_update(ptr),
+        ))
+    }
+}
+
+impl Option<false> {
+    pub(crate) fn new<const L: bool>(
+        uci: Arc<Mutex<Uci>>,
+        ptr: UciPtr<PTR_STAGE_OPTION, L>,
+    ) -> Option<L> {
+        Option { uci, ptr }
+    }
+
+    /// name of the option
+    pub fn name(&self) -> Result<&str> {
+        Ok(unsafe { CStr::from_ptr((*self.ptr).option) }.to_str()?)
+    }
+
+    /// returns the current value of the option, None if not set
+    pub fn get<'a>(&'a self) -> Result<StdOption<Value<'a>>> {
+        let mut uci = self.uci.lock().unwrap();
+        let ptr = match self.ptr.lookup(&mut uci)? {
+            Some(ptr) => ptr,
+            None => return Ok(None),
+        };
+        Self::get_impl(&ptr).map(Some)
+    }
+}
+
+impl Option<true> {
+    /// name of the option
+    pub fn name(&self) -> Result<&str> {
+        self.ptr.name()
+    }
+
+    /// returns the current value of the option, None if not set
+    pub fn get<'a>(&'a self) -> Result<Value<'a>> {
+        Self::get_impl(&self.ptr)
     }
 }
 

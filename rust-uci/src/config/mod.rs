@@ -1,8 +1,10 @@
-use std::{ffi::CString, option::Option as StdOption, ptr};
-
-use libuci_sys::{
-    list_to_element, uci_element, uci_list, uci_load, uci_lookup_next, uci_to_package,
+use std::{
+    ffi::{c_char, CStr},
+    option::Option as StdOption,
+    sync::{Arc, Mutex},
 };
+
+use libuci_sys::uci_list_configs;
 
 use crate::{
     error::{Error, Result},
@@ -12,106 +14,80 @@ use crate::{
 mod option;
 
 mod package;
-use package::{Package, PackageRef};
+use package::Package;
+
+mod ptr;
+use ptr::UciPtr;
 
 mod section;
-
-#[derive(Clone)]
-pub(crate) enum NameOrRef<N, T> {
-    Name(N),
-    Ref(T),
-}
-
-struct UciListIter {
-    list: *const uci_list,
-}
-
-impl UciListIter {
-    fn new(list: *const uci_list) -> Self {
-        Self { list }
-    }
-}
-
-impl Iterator for UciListIter {
-    type Item = *const uci_element;
-
-    fn next(&mut self) -> StdOption<Self::Item> {
-        if self.list.is_null() {
-            return None;
-        }
-
-        let node = unsafe { (*self.list).next };
-        if node.is_null() {
-            return None;
-        }
-        if node.cast_const() == self.list {
-            return None;
-        }
-
-        Some(unsafe { list_to_element(node.cast_const()) })
-    }
-}
 
 /// represents the root of the config tree
 /// It's the parent structure to [Package]s
 pub struct Config {
-    uci: Uci,
+    uci: Arc<Mutex<Uci>>,
 }
 
 impl From<Uci> for Config {
     fn from(uci: Uci) -> Self {
-        Self { uci }
+        Self {
+            uci: Arc::new(Mutex::new(uci)),
+        }
+    }
+}
+
+struct PackageIter {
+    uci: Arc<Mutex<Uci>>,
+    ptr: *mut *mut c_char,
+}
+
+impl Iterator for PackageIter {
+    type Item = Package<false>;
+
+    fn next(&mut self) -> StdOption<Self::Item> {
+        if self.ptr.is_null() {
+            return None;
+        }
+        let name_ptr = unsafe { *self.ptr };
+        if name_ptr.is_null() {
+            return None;
+        }
+        self.ptr = unsafe { self.ptr.add(1) };
+        let name = unsafe { CStr::from_ptr(name_ptr.cast()) }.to_str().unwrap();
+        let ptr = UciPtr::new();
+        Some(Package::new(
+            Arc::clone(&self.uci),
+            ptr.with_package_name(name).unwrap(),
+        ))
     }
 }
 
 impl Config {
     pub fn new() -> Result<Self> {
-        Ok(Self { uci: Uci::new()? })
+        Ok(Uci::new()?.into())
     }
 
     /// return a single [Package] by its name
     /// also works if the package is not defined yet
-    pub fn package<'a>(&'a mut self, name: impl AsRef<str>) -> Result<Package<'a>> {
-        let root = (unsafe { *self.uci.ctx }).root;
-        let lookup = lookup_child(&mut self.uci, root.next, &name)?;
-        let lookup = match lookup {
-            None => {
-                let mut pkg = ptr::null_mut();
-                let raw_name = CString::new(name.as_ref())?;
-                let result = unsafe { uci_load(self.uci.ctx, raw_name.as_ptr(), &mut pkg) };
-                handle_error(&mut self.uci, result)?.map(|_| pkg.cast_const())
-            }
-            Some(v) => Some(unsafe { uci_to_package(v) }),
-        };
-        let pkg = lookup
-            .map(|e| NameOrRef::Ref(unsafe { PackageRef::new(e) }))
-            .unwrap_or_else(|| NameOrRef::Name(name.as_ref().to_owned()));
-        Ok(Package::new(&mut self.uci, pkg))
+    pub fn package<'a>(&self, name: impl AsRef<str>) -> Result<Package<false>> {
+        let ptr = ptr::UciPtr::new();
+        let ptr = ptr.with_package_name(name)?;
+        Ok(Package::new(Arc::clone(&self.uci), ptr))
     }
 
     /// list all [Package]s in the config
-    pub fn packages<'a>(&'a mut self) -> impl Iterator<Item = PackageRef<'a>> {
-        // todo: this is broken, since packages are loaded on demand
-        // needs to use `uci_list_configs`
-
-        // Safety: self.uci.ctx is not null
-        let packages = unsafe { (&(*self.uci.ctx).root) as *const _ };
-        // Safety: elem is not null
-        UciListIter::new(packages).map(|elem| unsafe { PackageRef::new(uci_to_package(elem)) })
+    pub fn packages<'a>(&self) -> Result<impl Iterator<Item = Package<false>>> {
+        let mut uci = self.uci.lock().unwrap();
+        let mut list = std::ptr::null_mut();
+        let result = libuci_locked!(uci, { unsafe { uci_list_configs(uci.ctx, &mut list) } });
+        let ptr = match handle_error(&mut uci, result)? {
+            Some(_) => list,
+            None => std::ptr::null_mut(),
+        };
+        Ok(PackageIter {
+            uci: Arc::clone(&self.uci),
+            ptr,
+        })
     }
-}
-
-fn lookup_child(
-    uci: &mut Uci,
-    parent: *mut uci_list,
-    name: impl AsRef<str>,
-) -> Result<StdOption<*mut uci_element>> {
-    let raw = CString::new(name.as_ref())?;
-    let mut elem = ptr::null_mut();
-    let result = libuci_locked!(uci, {
-        unsafe { uci_lookup_next(uci.ctx, &mut elem as *mut _, parent, raw.as_ptr()) }
-    });
-    Ok(handle_error(uci, result)?.map(|_| elem))
 }
 
 fn handle_error(uci: &mut Uci, result: i32) -> Result<Option<()>> {
@@ -165,20 +141,43 @@ mod tests {
         )
         .unwrap();
 
-        let mut cfg: Config = uci.into();
-        let mut pkg = cfg.package("wireless").unwrap();
-        let mut sect = pkg.section("wifi-device", "pdev0").unwrap();
-        let mut opt = sect.option("channel").unwrap();
+        let cfg: Config = uci.into();
+        let pkg = cfg.package("wireless").unwrap();
+        let sect = pkg.section("wifi-device", "pdev0").unwrap();
+        let opt = sect.option("channel").unwrap();
         let val = opt.get().unwrap();
         assert_eq!(Some(option::Value::String("auto".into())), val);
     }
 
-    // #[test]
+    #[test]
     fn list_packages() {
-        let mut cfg = Config::new().unwrap();
-        let pkgs = cfg.packages();
+        let (uci, tmp) = setup_uci().unwrap();
+        std::fs::write(
+            &tmp.path().join("config/wireless"),
+            "
+            config wifi-device 'pdev0'
+                    option channel 'auto'
+            ",
+        )
+        .unwrap();
+        std::fs::write(
+            &tmp.path().join("config/network"),
+            "
+            config device 'eth0'
+                    option mtu '1280'
+            ",
+        )
+        .unwrap();
+
+        let cfg: Config = uci.into();
+        let pkgs: Vec<_> = cfg.packages().unwrap().collect();
+        assert_eq!(2, pkgs.len());
         for pkg in pkgs {
-            println!("{}", pkg.name().unwrap());
+            match pkg.name().unwrap() {
+                "wireless" => (),
+                "network" => (),
+                n => panic!("Unexpected name: {}", n),
+            }
         }
     }
 }
