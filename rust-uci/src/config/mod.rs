@@ -93,6 +93,22 @@ impl Config {
             current: ptr,
         })
     }
+
+    /// save all packages to the temporary delta
+    pub fn save_all(&mut self) -> Result<()> {
+        for mut pkg in self.packages()? {
+            pkg.save()?;
+        }
+        Ok(())
+    }
+
+    /// commit all packages from the delta to the config on disk
+    pub fn commit_all(&mut self) -> Result<()> {
+        for mut pkg in self.packages()? {
+            pkg.commit()?;
+        }
+        Ok(())
+    }
 }
 
 fn handle_error(uci: &mut Uci, result: i32) -> Result<Option<()>> {

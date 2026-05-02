@@ -5,9 +5,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use libuci_sys::{uci_section, uci_to_section, uci_type_UCI_TYPE_PACKAGE};
+use libuci_sys::{uci_commit, uci_save, uci_section, uci_to_section, uci_type_UCI_TYPE_PACKAGE};
 
-use crate::{config::section::SectionIdent, Result, Uci};
+use crate::{
+    config::{handle_error, section::SectionIdent},
+    error::Error,
+    libuci_locked, Result, Uci,
+};
 
 use super::{
     ptr::{UciListIter, UciPtr},
@@ -105,5 +109,24 @@ impl Package {
             Arc::new(type_),
             Arc::new(ident),
         ))
+    }
+
+    /// save package delta to disk
+    pub fn save(&mut self) -> Result<()> {
+        let mut uci = self.uci.lock().unwrap();
+        let pkg = self.ptr(&mut uci)?.p;
+        let result = libuci_locked!(uci, unsafe { uci_save(uci.ctx, pkg) });
+        handle_error(&mut uci, result)?;
+        Ok(())
+    }
+
+    /// commit package delta into real config on disk
+    pub fn commit(&mut self) -> Result<()> {
+        let mut uci = self.uci.lock().unwrap();
+        let mut pkg = self.ptr(&mut uci)?.p;
+        // the uci cli seems to set `override=false` too, not sure what it means
+        let result = libuci_locked!(uci, unsafe { uci_commit(uci.ctx, &raw mut pkg, false) });
+        handle_error(&mut uci, result)?;
+        Ok(())
     }
 }
