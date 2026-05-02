@@ -17,21 +17,23 @@ use super::{
     section::{Section, SectionIdent},
 };
 
+pub type OptionMut = Option<true>;
+
 /// represents an option within a [Section]
-pub struct Option {
+pub struct Option<const MUT: bool = false> {
     uci: Arc<Mutex<Uci>>,
     package: Arc<CString>,
     section: (Arc<CString>, Arc<SectionIdent<CString>>),
     name: Arc<CString>,
 }
 
-impl Option {
+impl<const MUT: bool> Option<MUT> {
     pub(crate) fn new(
         uci: Arc<Mutex<Uci>>,
         package: Arc<CString>,
         section: (Arc<CString>, Arc<SectionIdent<CString>>),
         name: Arc<CString>,
-    ) -> Option {
+    ) -> Option<MUT> {
         Option {
             uci,
             package,
@@ -84,6 +86,44 @@ impl Option {
         )
     }
 
+    /// returns the current value of the option, None if not set
+    pub fn get<'a>(&'a self) -> Result<StdOption<Value>> {
+        let mut uci = self.uci.lock().unwrap();
+        let ptr = match self.ptr(&mut uci)? {
+            Some(ptr) => ptr,
+            None => return Ok(None),
+        };
+
+        let opt = ptr.o;
+
+        #[allow(non_upper_case_globals)]
+        match unsafe { *opt }.type_ {
+            uci_option_type_UCI_TYPE_STRING => {
+                let raw = unsafe { CStr::from_ptr((*opt).v.string) };
+                Ok(Value::String(raw.to_str()?.into()))
+            }
+            uci_option_type_UCI_TYPE_LIST => {
+                let mut result = Vec::new();
+                unsafe {
+                    uci_foreach_element(&(*opt).v.list, |elem| {
+                        let raw = CStr::from_ptr((*elem).name);
+                        result.push(raw);
+                    })
+                };
+                Ok(Value::List(
+                    result
+                        .into_iter()
+                        .map(|cstr| cstr.to_str().map_err(Into::into).map(Into::into))
+                        .collect::<Result<Vec<_>>>()?,
+                ))
+            }
+            t => return Err(Error::Message(format!("Unexpected option type: {t}"))),
+        }
+        .map(Some)
+    }
+}
+
+impl OptionMut {
     /// sets the value of the option, overriding the previous value
     /// will create the [Package] or [Section] along the way if they do
     /// not exist
@@ -119,42 +159,6 @@ impl Option {
         handle_error(&mut uci, result)?;
 
         Ok(())
-    }
-
-    /// returns the current value of the option, None if not set
-    pub fn get<'a>(&'a self) -> Result<StdOption<Value>> {
-        let mut uci = self.uci.lock().unwrap();
-        let ptr = match self.ptr(&mut uci)? {
-            Some(ptr) => ptr,
-            None => return Ok(None),
-        };
-
-        let opt = ptr.o;
-
-        #[allow(non_upper_case_globals)]
-        match unsafe { *opt }.type_ {
-            uci_option_type_UCI_TYPE_STRING => {
-                let raw = unsafe { CStr::from_ptr((*opt).v.string) };
-                Ok(Value::String(raw.to_str()?.into()))
-            }
-            uci_option_type_UCI_TYPE_LIST => {
-                let mut result = Vec::new();
-                unsafe {
-                    uci_foreach_element(&(*opt).v.list, |elem| {
-                        let raw = CStr::from_ptr((*elem).name);
-                        result.push(raw);
-                    })
-                };
-                Ok(Value::List(
-                    result
-                        .into_iter()
-                        .map(|cstr| cstr.to_str().map_err(Into::into).map(Into::into))
-                        .collect::<Result<Vec<_>>>()?,
-                ))
-            }
-            t => return Err(Error::Message(format!("Unexpected option type: {t}"))),
-        }
-        .map(Some)
     }
 }
 

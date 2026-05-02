@@ -11,7 +11,10 @@ use libuci_sys::{
     uci_add_section, uci_ptr_UCI_LOOKUP_EXTENDED, uci_set, uci_type_UCI_TYPE_SECTION,
 };
 
-use crate::{config::handle_error, libuci_locked, Result, Uci};
+use crate::{
+    config::{handle_error, option::OptionMut},
+    libuci_locked, Result, Uci,
+};
 
 use super::{
     option::Option,
@@ -207,7 +210,21 @@ impl Section {
     /// also works if the option is not defined yet
     pub fn option(&self, name: impl AsRef<str>) -> Result<Option> {
         let name = CString::new(name.as_ref())?;
-        Ok(Option::new(
+        Ok(Option::<false>::new(
+            Arc::clone(&self.uci),
+            Arc::clone(&self.package),
+            (Arc::clone(&self.type_), Arc::clone(&self.ident)),
+            Arc::new(name),
+        ))
+    }
+
+    /// works like [Self::option], but ensures the section exists first
+    /// this then allows to modify the option
+    /// (which requires the section to exist)
+    pub fn option_mut(&mut self, name: impl AsRef<str>) -> Result<OptionMut> {
+        self.ensure(None)?;
+        let name = CString::new(name.as_ref())?;
+        Ok(Option::<true>::new(
             Arc::clone(&self.uci),
             Arc::clone(&self.package),
             (Arc::clone(&self.type_), Arc::clone(&self.ident)),
