@@ -51,9 +51,10 @@ impl Package {
     }
 
     pub(crate) unsafe fn section_ident(section: *const uci_section) -> SectionIdent<CString> {
-        let elem = &unsafe { *section }.e;
+        let elem = &raw const (*section).e;
+        let sections = &raw const (*(*section).package).sections;
         match unsafe { *section }.anonymous {
-            true => UciListIter::new(&unsafe { *(*section).package }.sections)
+            true => UciListIter::new(sections)
                 .enumerate()
                 .find(|(_, sect_elem)| *sect_elem == elem)
                 .map(|(i, _)| SectionIdent::Indexed(i as i32))
