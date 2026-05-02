@@ -36,23 +36,31 @@ impl From<Uci> for Config {
 
 struct PackageIter {
     uci: Arc<Mutex<Uci>>,
-    ptr: *mut *mut c_char,
+    original: *mut *mut c_char,
+    current: *mut *mut c_char,
 }
 
 impl Iterator for PackageIter {
     type Item = Package;
 
     fn next(&mut self) -> StdOption<Self::Item> {
-        if self.ptr.is_null() {
+        if self.current.is_null() {
             return None;
         }
-        let name_ptr = unsafe { *self.ptr };
+        let name_ptr = unsafe { *self.current };
         if name_ptr.is_null() {
             return None;
         }
-        self.ptr = unsafe { self.ptr.add(1) };
+        self.current = unsafe { self.current.add(1) };
         let name = unsafe { CStr::from_ptr(name_ptr.cast()) }.to_owned();
+
         Some(Package::new(Arc::clone(&self.uci), Arc::new(name)))
+    }
+}
+
+impl Drop for PackageIter {
+    fn drop(&mut self) {
+        unsafe { libc::free(self.original.cast::<std::os::raw::c_void>()) }
     }
 }
 
@@ -81,7 +89,8 @@ impl Config {
         };
         Ok(PackageIter {
             uci: Arc::clone(&self.uci),
-            ptr,
+            original: ptr,
+            current: ptr,
         })
     }
 }
