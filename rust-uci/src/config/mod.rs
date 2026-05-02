@@ -400,12 +400,49 @@ mod tests {
         assert_eq!(3, sections.len());
 
         for section in &sections {
+            assert_eq!("wifi-device", section.type_());
             let channel = section.option("channel").unwrap().get().unwrap().unwrap();
             match section.name().unwrap().as_str() {
                 "pdev0" => assert_eq!(Value::String("auto".into()), channel),
                 "pdev1" => assert_eq!(Value::List(vec!["44".into(), "48".into()]), channel),
                 _ => assert_eq!(Value::String("56".into()), channel),
             }
+        }
+    }
+
+    #[test]
+    fn list_sections_by_type() {
+        let (uci, tmp) = setup_uci().unwrap();
+        std::fs::write(
+            &tmp.path().join("config/wireless"),
+            "
+            config wifi-device 'pdev0'
+                    option channel 'auto'
+
+            config wifi-iface 'wlan0'
+                    option device 'pdev0'
+
+            config wifi-iface
+                    option device 'pdev0'
+            ",
+        )
+        .unwrap();
+
+        let cfg = Config::from(uci);
+        let pkg = cfg.package("wireless").unwrap().unwrap();
+
+        let all_sections: Vec<_> = pkg.sections().unwrap().collect();
+        assert_eq!(3, all_sections.len());
+
+        let iface_sections: Vec<_> = pkg.sections_by_type("wifi-iface").unwrap().collect();
+        assert_eq!(2, iface_sections.len());
+
+        for sect in iface_sections {
+            assert_eq!("wifi-iface", sect.type_());
+            assert_eq!(
+                Value::String("pdev0".into()),
+                sect.option("device").unwrap().get().unwrap().unwrap()
+            )
         }
     }
 

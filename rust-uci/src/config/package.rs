@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use libuci_sys::{uci_commit, uci_save, uci_to_section, uci_type_UCI_TYPE_PACKAGE};
+use libuci_sys::{uci_commit, uci_element, uci_save, uci_to_section, uci_type_UCI_TYPE_PACKAGE};
 
 use crate::{
     config::{handle_error, section::SectionIdent},
@@ -50,7 +50,10 @@ impl Package {
         }
     }
 
-    pub fn sections(&self) -> Result<impl Iterator<Item = Section>> {
+    fn sections_impl<F: FnMut(&*const uci_element) -> bool>(
+        &self,
+        filter: F,
+    ) -> Result<impl Iterator<Item = Section>> {
         let mut uci = self.uci.lock().unwrap();
         let ptr = match self.ptr_opt(&mut uci)? {
             Some(ptr) => unsafe { &(*ptr.p).sections },
@@ -59,7 +62,7 @@ impl Package {
         drop(uci);
         let uci = Arc::clone(&self.uci);
         let package = Arc::clone(&self.name);
-        Ok(UciListIter::new(ptr).map(move |elem| {
+        Ok(UciListIter::new(ptr).filter(filter).map(move |elem| {
             let sect = unsafe { uci_to_section(elem) };
             let type_ = unsafe { CStr::from_ptr((*sect).type_) }.to_owned();
             let name = unsafe { CStr::from_ptr((*elem).name) }.to_owned();
@@ -70,6 +73,21 @@ impl Package {
                 Arc::new(SectionIdent::Named(name)),
             )
         }))
+    }
+
+    pub fn sections(&self) -> Result<impl Iterator<Item = Section>> {
+        self.sections_impl(|_| true)
+    }
+
+    pub fn sections_by_type(
+        &self,
+        type_: impl AsRef<str>,
+    ) -> Result<impl Iterator<Item = Section>> {
+        let type_ = CString::new(type_.as_ref())?;
+        self.sections_impl(move |e| {
+            let elem_type = unsafe { CStr::from_ptr((*uci_to_section(*e)).type_) };
+            elem_type == type_.as_c_str()
+        })
     }
 
     /// return a single [Section] by its name
