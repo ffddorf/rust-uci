@@ -187,16 +187,16 @@ impl Section {
     /// lists all options in this section
     pub fn options(&self) -> Result<impl Iterator<Item = Option>> {
         let mut uci = self.uci.lock().unwrap();
-        let ptr = match self.ptr(&mut uci)? {
-            Some(ptr) => &unsafe { *ptr.s }.options,
-            None => ptr::null(),
-        };
+        let section = self.ptr(&mut uci)?.map(|p| unsafe { *p.s });
+        let option_list = section
+            .map(|l| &raw const l.options)
+            .unwrap_or_else(ptr::null);
 
         let uci = Arc::clone(&self.uci);
         let package = Arc::clone(&self.package);
         let section_type = Arc::clone(&self.type_);
         let section_ident = Arc::clone(&self.ident);
-        Ok(UciListIter::new(ptr).map(move |elem| {
+        Ok(UciListIter::new(option_list).map(move |elem| {
             let name = unsafe { CStr::from_ptr((*elem).name) }.to_owned();
             Option::new(
                 Arc::clone(&uci),
