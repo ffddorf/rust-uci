@@ -75,7 +75,7 @@ impl Config {
         let cname = CString::new(name.as_ref())?;
         let pkg = Package::new(Arc::clone(&self.uci), Arc::new(cname));
         let mut uci = self.uci.lock().unwrap();
-        Ok(pkg.ptr(&mut uci)?.map(|_| pkg))
+        Ok(pkg.ptr_opt(&mut uci)?.map(|_| pkg))
     }
 
     /// list all [Package]s in the config

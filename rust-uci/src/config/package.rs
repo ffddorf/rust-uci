@@ -30,11 +30,20 @@ impl Package {
         Ok(self.name.to_str()?)
     }
 
-    pub(crate) fn ptr<'a>(&'_ self, uci: &'a mut Uci) -> Result<StdOption<UciPtr<'a>>> {
+    pub(crate) fn ptr_opt<'a>(&'_ self, uci: &'a mut Uci) -> Result<StdOption<UciPtr<'a>>> {
         let mut ptr = UciPtr::new();
         ptr.target = uci_type_UCI_TYPE_PACKAGE;
         ptr.package = self.name.as_c_str().as_ptr();
         ptr.lookup(uci)
+    }
+
+    pub(crate) fn ptr<'a>(&'_ self, uci: &'a mut Uci) -> Result<UciPtr<'a>> {
+        match self.ptr_opt(uci)? {
+            Some(ptr) => Ok(ptr),
+            None => Err(Error::EntryNotFound {
+                entry_identifier: self.name()?.to_owned(),
+            }),
+        }
     }
 
     pub(crate) unsafe fn section_ident(section: *const uci_section) -> SectionIdent<CString> {
@@ -54,7 +63,7 @@ impl Package {
 
     pub fn sections(&self) -> Result<impl Iterator<Item = Section>> {
         let mut uci = self.uci.lock().unwrap();
-        let ptr = match self.ptr(&mut uci)? {
+        let ptr = match self.ptr_opt(&mut uci)? {
             Some(ptr) => unsafe { &(*ptr.p).sections },
             None => ptr::null(),
         };

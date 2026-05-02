@@ -11,7 +11,7 @@ use libuci_sys::{
     uci_add_section, uci_ptr_UCI_LOOKUP_EXTENDED, uci_set, uci_type_UCI_TYPE_SECTION,
 };
 
-use crate::{config::handle_error, error::Error, libuci_locked, Result, Uci};
+use crate::{config::handle_error, libuci_locked, Result, Uci};
 
 use super::{
     option::Option,
@@ -101,12 +101,7 @@ impl Section {
                 guard.as_deref_mut().unwrap()
             }
         };
-        let pkg_ptr = self
-            .package()
-            .ptr(uci)?
-            .ok_or_else(|| Error::EntryNotFound {
-                entry_identifier: self.package.to_str().unwrap().to_owned(),
-            })?;
+        let pkg_ptr = self.package().ptr(uci)?;
 
         let mut ptr = UciPtr::new();
         ptr.target = uci_type_UCI_TYPE_SECTION;
