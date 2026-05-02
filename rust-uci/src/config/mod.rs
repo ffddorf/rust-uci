@@ -41,7 +41,7 @@ struct PackageIter {
 }
 
 impl Iterator for PackageIter {
-    type Item = Package<false>;
+    type Item = Package;
 
     fn next(&mut self) -> StdOption<Self::Item> {
         if self.ptr.is_null() {
@@ -65,14 +65,14 @@ impl Config {
 
     /// return a single [Package] by its name
     /// also works if the package is not defined yet
-    pub fn package<'a>(&self, name: impl AsRef<str>) -> Result<Package<false>> {
+    pub fn package<'a>(&self, name: impl AsRef<str>) -> Result<Package> {
         let ptr = ptr::UciPtr::new(Arc::clone(&self.uci));
         let ptr = ptr.with_package_name(name)?;
         Ok(Package::new(ptr))
     }
 
     /// list all [Package]s in the config
-    pub fn packages<'a>(&self) -> Result<impl Iterator<Item = Package<false>>> {
+    pub fn packages<'a>(&self) -> Result<impl Iterator<Item = Package>> {
         let mut uci = self.uci.lock().unwrap();
         let mut list = std::ptr::null_mut();
         let result = libuci_locked!(uci, { unsafe { uci_list_configs(uci.ctx, &mut list) } });
@@ -106,7 +106,7 @@ fn handle_error(uci: &mut Uci, result: i32) -> Result<Option<()>> {
 mod tests {
     use tempfile::{tempdir, TempDir};
 
-    use super::*;
+    use super::{option::Value, *};
 
     fn setup_uci() -> Result<(Uci, TempDir)> {
         let mut uci = Uci::new()?;
@@ -140,7 +140,7 @@ mod tests {
 
         let cfg: Config = uci.into();
         let pkg = cfg.package("wireless").unwrap();
-        let sect = pkg.section("wifi-device", "pdev0").unwrap();
+        let sect = pkg.section("pdev0").unwrap();
         let opt = sect.option("channel").unwrap();
         let val = opt.get().unwrap();
         assert_eq!(Some(option::Value::String("auto".into())), val);
@@ -194,14 +194,17 @@ mod tests {
         let pkg = cfg.package("wireless").unwrap();
         for section in pkg.sections().unwrap() {
             let opt = section.option("channel").unwrap();
-            let updated = opt.set("foo").unwrap();
-            assert_eq!(opt.get().unwrap(), Some(updated.get().unwrap()));
+            let val_before = opt.get().unwrap();
+            opt.set("foo").unwrap();
+            let val_after = opt.get().unwrap();
+            assert_eq!(Some(Value::String("auto".into())), val_before);
+            assert_eq!(Some(Value::String("foo".into())), val_after);
         }
 
         let opt = cfg
             .package("wireless")
             .unwrap()
-            .section("wifi-device", "pdev1")
+            .section("pdev1")
             .unwrap()
             .option("channel")
             .unwrap();

@@ -1,5 +1,5 @@
 use std::{
-    ffi::{CStr, CString},
+    ffi::CString,
     iter::once,
     marker::PhantomData,
     ops::{Deref, DerefMut},
@@ -9,9 +9,8 @@ use std::{
 };
 
 use libuci_sys::{
-    list_to_element, uci_element, uci_list, uci_lookup_ptr, uci_option, uci_package, uci_ptr,
-    uci_ptr_UCI_LOOKUP_COMPLETE, uci_section, uci_type_UCI_TYPE_OPTION, uci_type_UCI_TYPE_PACKAGE,
-    uci_type_UCI_TYPE_SECTION, uci_type_UCI_TYPE_UNSPEC,
+    list_to_element, uci_element, uci_list, uci_lookup_ptr, uci_ptr, uci_type_UCI_TYPE_OPTION,
+    uci_type_UCI_TYPE_PACKAGE, uci_type_UCI_TYPE_SECTION, uci_type_UCI_TYPE_UNSPEC,
 };
 
 use crate::{config::handle_error, libuci_locked, Result, Uci};
@@ -56,13 +55,13 @@ pub(crate) const PTR_STAGE_PACKAGE: usize = 1;
 pub(crate) const PTR_STAGE_SECTION: usize = 2;
 pub(crate) const PTR_STAGE_OPTION: usize = 3;
 
-pub(crate) struct UciPtr<const S: usize, const L: bool> {
-    pub(crate) uci: Arc<Mutex<Uci>>,
+pub(crate) struct UciPtr<const S: usize> {
     ptr: uci_ptr,
-    data: Vec<Arc<CString>>,
+    pub uci: Arc<Mutex<Uci>>,
+    pub data: Vec<Arc<CString>>,
 }
 
-impl<const S: usize, const L: bool> Deref for UciPtr<S, L> {
+impl<const S: usize> Deref for UciPtr<S> {
     type Target = uci_ptr;
 
     fn deref(&self) -> &Self::Target {
@@ -70,13 +69,13 @@ impl<const S: usize, const L: bool> Deref for UciPtr<S, L> {
     }
 }
 
-impl<const S: usize, const L: bool> DerefMut for UciPtr<S, L> {
+impl<const S: usize> DerefMut for UciPtr<S> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.ptr
     }
 }
 
-impl UciPtr<PTR_STAGE_INIT, false> {
+impl UciPtr<PTR_STAGE_INIT> {
     pub fn new(uci: Arc<Mutex<Uci>>) -> Self {
         let ptr = uci_ptr {
             target: uci_type_UCI_TYPE_UNSPEC,
@@ -97,21 +96,7 @@ impl UciPtr<PTR_STAGE_INIT, false> {
         }
     }
 
-    pub fn with_package(&self, pkg: *mut uci_package) -> UciPtr<PTR_STAGE_PACKAGE, true> {
-        let mut ptr = self.ptr.clone();
-        ptr.target = uci_type_UCI_TYPE_PACKAGE;
-        ptr.p = pkg;
-        UciPtr {
-            uci: Arc::clone(&self.uci),
-            ptr,
-            data: Vec::new(),
-        }
-    }
-
-    pub fn with_package_name(
-        &self,
-        name: impl AsRef<str>,
-    ) -> Result<UciPtr<PTR_STAGE_PACKAGE, false>> {
+    pub fn with_package_name(&self, name: impl AsRef<str>) -> Result<UciPtr<PTR_STAGE_PACKAGE>> {
         let name = CString::new(name.as_ref())?;
         let mut ptr = self.ptr.clone();
         ptr.target = uci_type_UCI_TYPE_PACKAGE;
@@ -124,24 +109,8 @@ impl UciPtr<PTR_STAGE_INIT, false> {
     }
 }
 
-impl UciPtr<PTR_STAGE_PACKAGE, true> {
-    pub fn with_section(&self, section: *mut uci_section) -> UciPtr<PTR_STAGE_SECTION, true> {
-        let mut ptr = self.ptr.clone();
-        ptr.target = uci_type_UCI_TYPE_SECTION;
-        ptr.s = section;
-        UciPtr {
-            uci: Arc::clone(&self.uci),
-            ptr,
-            data: self.data.iter().map(Arc::clone).collect(),
-        }
-    }
-}
-
-impl<const L: bool> UciPtr<PTR_STAGE_PACKAGE, L> {
-    pub fn with_section_name(
-        &self,
-        name: impl AsRef<str>,
-    ) -> Result<UciPtr<PTR_STAGE_SECTION, false>> {
+impl UciPtr<PTR_STAGE_PACKAGE> {
+    pub fn with_section_name(&self, name: impl AsRef<str>) -> Result<UciPtr<PTR_STAGE_SECTION>> {
         let name = CString::new(name.as_ref())?;
         let mut ptr = self.ptr.clone();
         ptr.target = uci_type_UCI_TYPE_SECTION;
@@ -159,24 +128,8 @@ impl<const L: bool> UciPtr<PTR_STAGE_PACKAGE, L> {
     }
 }
 
-impl UciPtr<PTR_STAGE_SECTION, true> {
-    pub fn with_option(&self, opt: *mut uci_option) -> UciPtr<PTR_STAGE_OPTION, true> {
-        let mut ptr = self.ptr.clone();
-        ptr.target = uci_type_UCI_TYPE_OPTION;
-        ptr.o = opt;
-        UciPtr {
-            uci: Arc::clone(&self.uci),
-            ptr,
-            data: self.data.iter().map(Arc::clone).collect(),
-        }
-    }
-}
-
-impl<const L: bool> UciPtr<PTR_STAGE_SECTION, L> {
-    pub fn with_option_name(
-        &self,
-        name: impl AsRef<str>,
-    ) -> Result<UciPtr<PTR_STAGE_OPTION, false>> {
+impl UciPtr<PTR_STAGE_SECTION> {
+    pub fn with_option_name(&self, name: impl AsRef<str>) -> Result<UciPtr<PTR_STAGE_OPTION>> {
         let name = CString::new(name.as_ref())?;
         let mut ptr = self.ptr.clone();
         ptr.target = uci_type_UCI_TYPE_OPTION;
@@ -191,34 +144,6 @@ impl<const L: bool> UciPtr<PTR_STAGE_SECTION, L> {
                 .chain(once(Arc::new(name)))
                 .collect(),
         })
-    }
-}
-
-impl<const L: bool> UciPtr<PTR_STAGE_OPTION, L> {
-    pub fn with_update(
-        &self,
-        ptr: uci_ptr,
-        extra_data: impl Iterator<Item = CString>,
-    ) -> UciPtr<PTR_STAGE_OPTION, true> {
-        if ptr.target != uci_type_UCI_TYPE_OPTION {
-            panic!("Invalid target, expected Option, got {}", ptr.target);
-        }
-        if ptr.p.is_null() || ptr.s.is_null() || ptr.o.is_null() {
-            panic!("Invalid uci_ptr: not fully looked up");
-        }
-        if ptr.flags & uci_ptr_UCI_LOOKUP_COMPLETE == 0 {
-            panic!("Invalid uci_ptr: lookup not complete");
-        }
-        UciPtr {
-            uci: Arc::clone(&self.uci),
-            ptr,
-            data: self
-                .data
-                .iter()
-                .map(Arc::clone)
-                .chain(extra_data.map(Arc::new))
-                .collect(),
-        }
     }
 }
 
@@ -238,14 +163,8 @@ where
     }
 }
 
-impl<const S: usize> UciPtr<S, true> {
-    pub fn name(&self) -> Result<&str> {
-        Ok(unsafe { CStr::from_ptr((*self.ptr.last).name) }.to_str()?)
-    }
-}
-
-impl<const S: usize> UciPtr<S, false> {
-    pub fn lookup(&self) -> Result<StdOption<UciPtr<S, true>>> {
+impl<const S: usize> UciPtr<S> {
+    pub fn lookup(&self) -> Result<StdOption<UciPtr<S>>> {
         let mut ptr = self.ptr.clone();
         let mut uci = self.uci.lock().unwrap();
         let result = libuci_locked!(uci, {

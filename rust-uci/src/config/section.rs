@@ -1,8 +1,12 @@
-use std::ffi::CStr;
+use std::{
+    ffi::{CStr, CString},
+    option::Option as StdOption,
+    sync::Arc,
+};
 
-use libuci_sys::uci_to_option;
+use libuci_sys::uci_set;
 
-use crate::Result;
+use crate::{config::handle_error, libuci_locked, Result};
 
 use super::{
     option::Option,
@@ -11,44 +15,60 @@ use super::{
 
 /// represents a single section
 /// parent to different [Option]s
-// todo: get rid of const generic, use enum
-pub struct Section<const L: bool> {
-    ptr: UciPtr<PTR_STAGE_SECTION, L>,
+pub struct Section {
+    ptr: UciPtr<PTR_STAGE_SECTION>,
 }
 
-impl<const L: bool> Section<L> {
-    pub(crate) fn new(ptr: UciPtr<PTR_STAGE_SECTION, L>) -> Self {
+impl Section {
+    pub(crate) fn new(ptr: UciPtr<PTR_STAGE_SECTION>) -> Self {
         Self { ptr }
     }
-}
 
-impl Section<true> {
-    /// returns the name of named sections, otherwise None
-    pub fn name(&self) -> Result<&str> {
-        self.ptr.name()
+    pub fn create(&self, type_: impl AsRef<str>) -> Result<()> {
+        let type_ = CString::new(type_.as_ref())?;
+
+        // avoid modifying the long-lived uci_ptr
+        let mut ptr = self.ptr.clone();
+        ptr.value = type_.as_ptr();
+
+        let uci = Arc::clone(&self.ptr.uci);
+        let mut uci = uci.lock().unwrap();
+        let result = libuci_locked!(uci, unsafe { uci_set(uci.ctx, &mut ptr) });
+        handle_error(&mut uci, result)?;
+
+        Ok(())
     }
 
-    /// returns the type of the section
-    pub fn type_(&mut self) -> Result<&str> {
-        Ok(unsafe { CStr::from_ptr((*self.ptr.s).type_) }.to_str()?)
+    /// returns the name of the section item
+    pub fn name(&self) -> Result<&str> {
+        Ok(unsafe { CStr::from_ptr(self.ptr.section) }.to_str()?)
+    }
+
+    /// returns the type of the section, if it exists
+    pub fn type_(&self) -> Result<StdOption<String>> {
+        let ptr = match self.ptr.lookup()? {
+            Some(ptr) => ptr,
+            None => return Ok(None),
+        };
+        Ok(Some(
+            unsafe { CStr::from_ptr((*ptr.s).type_) }
+                .to_str()?
+                .to_owned(),
+        ))
     }
 
     /// lists all options in this section
-    pub fn options(&self) -> impl Iterator<Item = Option<true>> + use<'_> {
+    pub fn options(&self) -> impl Iterator<Item = Option> + use<'_> {
         let iter = unsafe { UciListIter::new(&(*self.ptr.s).options) };
         iter.map(move |elem| {
-            Option::new(
-                self.ptr
-                    .with_option(unsafe { uci_to_option(elem).cast_mut() }),
-            )
+            let name = unsafe { CStr::from_ptr((*elem).name) }.to_str().unwrap();
+            Option::new(self.ptr.with_option_name(name).unwrap())
         })
     }
-}
 
-impl<const L: bool> Section<L> {
     /// returns a specific [Option] by name
     /// also works if the option is not defined yet
-    pub fn option(&self, name: impl AsRef<str>) -> Result<Option<false>> {
+    pub fn option(&self, name: impl AsRef<str>) -> Result<Option> {
         let ptr = self.ptr.with_option_name(name)?;
         Ok(Option::new(ptr))
     }
