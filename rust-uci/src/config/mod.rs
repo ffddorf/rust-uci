@@ -173,6 +173,177 @@ mod tests {
     }
 
     #[test]
+    fn set_option_existing() {
+        let (uci, tmp) = setup_uci().unwrap();
+        std::fs::write(
+            &tmp.path().join("config/wireless"),
+            "
+            config wifi-device 'pdev0'
+                    option channel 'auto'
+            ",
+        )
+        .unwrap();
+
+        let cfg = Config::from(uci);
+        let mut opt = cfg
+            .package("wireless")
+            .unwrap()
+            .unwrap()
+            .section("wifi-device", "pdev0")
+            .unwrap()
+            .option_mut("channel")
+            .unwrap();
+        opt.set("44").unwrap();
+        assert_eq!(Value::String("44".into()), opt.get().unwrap().unwrap());
+    }
+
+    #[test]
+    fn set_option_new() {
+        let (uci, tmp) = setup_uci().unwrap();
+        std::fs::write(
+            &tmp.path().join("config/wireless"),
+            "
+            config wifi-device 'pdev0'
+                    option channel 'auto'
+            ",
+        )
+        .unwrap();
+        let save_dir = uci.get_save_dir().unwrap().to_owned();
+        let config_dir = uci.get_config_dir().unwrap().to_owned();
+
+        let mut cfg = Config::from(uci);
+
+        {
+            let mut opt = cfg
+                .package("wireless")
+                .unwrap()
+                .unwrap()
+                .section("wifi-device", "pdev0")
+                .unwrap()
+                .option_mut("disabled")
+                .unwrap();
+            opt.set("1").unwrap();
+            assert_eq!(Value::String("1".into()), opt.get().unwrap().unwrap());
+        }
+
+        {
+            // re-get, unsaved
+            let v = cfg
+                .package("wireless")
+                .unwrap()
+                .unwrap()
+                .section("wifi-device", "pdev0")
+                .unwrap()
+                .option("disabled")
+                .unwrap()
+                .get()
+                .unwrap()
+                .unwrap();
+            assert_eq!(Value::String("1".into()), v);
+        }
+
+        cfg.save_all().unwrap();
+
+        {
+            // recreate uci instance
+            let mut uci = Uci::new().unwrap();
+            uci.set_save_dir(&save_dir).unwrap();
+            uci.set_config_dir(&config_dir).unwrap();
+            let cfg = Config::from(uci);
+
+            // saved
+            let v = cfg
+                .package("wireless")
+                .unwrap()
+                .unwrap()
+                .section("wifi-device", "pdev0")
+                .unwrap()
+                .option("disabled")
+                .unwrap()
+                .get()
+                .unwrap()
+                .unwrap();
+            assert_eq!(Value::String("1".into()), v);
+        }
+    }
+
+    #[test]
+    fn set_option_new_section() {
+        let (uci, tmp) = setup_uci().unwrap();
+        std::fs::write(
+            &tmp.path().join("config/wireless"),
+            "
+            config wifi-device 'pdev0'
+                    option channel 'auto'
+            ",
+        )
+        .unwrap();
+
+        let cfg = Config::from(uci);
+
+        {
+            let mut opt = cfg
+                .package("wireless")
+                .unwrap()
+                .unwrap()
+                .section("wifi-device", "pdev1")
+                .unwrap()
+                .option_mut("channel")
+                .unwrap();
+            opt.set("auto").unwrap();
+            assert_eq!(Value::String("auto".into()), opt.get().unwrap().unwrap());
+        }
+
+        {
+            let v = cfg
+                .package("wireless")
+                .unwrap()
+                .unwrap()
+                .section("wifi-device", "pdev1")
+                .unwrap()
+                .option("channel")
+                .unwrap()
+                .get()
+                .unwrap()
+                .unwrap();
+            assert_eq!(Value::String("auto".into()), v);
+        }
+    }
+
+    #[test]
+    fn create_section_anonymous() {
+        let (uci, tmp) = setup_uci().unwrap();
+        std::fs::write(
+            &tmp.path().join("config/wireless"),
+            "
+            config wifi-device 'pdev0'
+                    option channel 'auto'
+            ",
+        )
+        .unwrap();
+
+        let cfg = Config::from(uci);
+        let mut section = cfg
+            .package("wireless")
+            .unwrap()
+            .unwrap()
+            .section("wifi-device", ())
+            .unwrap();
+        // will implictly create the option
+        section.option_mut("channel").unwrap().set("auto").unwrap();
+        assert_eq!(
+            Value::String("auto".into()),
+            section.option("channel").unwrap().get().unwrap().unwrap()
+        );
+        assert!(section.name().unwrap().len() > 0);
+
+        let pkg = cfg.package("wireless").unwrap().unwrap();
+        for sect in pkg.sections().unwrap() {
+            println!("{}", sect.name().unwrap());
+        }
+    }
+
+    #[test]
     fn list_packages() {
         let (uci, tmp) = setup_uci().unwrap();
         std::fs::write(
@@ -205,38 +376,77 @@ mod tests {
     }
 
     #[test]
-    fn ptr_mutability() {
+    fn list_sections() {
         let (uci, tmp) = setup_uci().unwrap();
         std::fs::write(
             &tmp.path().join("config/wireless"),
             "
             config wifi-device 'pdev0'
                     option channel 'auto'
+
+            config wifi-device 'pdev1'
+                    list channel '44'
+                    list channel '48'
+
+            config wifi-device
+                    option channel '56'
             ",
         )
         .unwrap();
 
-        let cfg: Config = uci.into();
+        let cfg = Config::from(uci);
         let pkg = cfg.package("wireless").unwrap().unwrap();
-        for section in pkg.sections().unwrap() {
-            let mut opt = section.option("channel").unwrap();
-            let val_before = opt.get().unwrap();
-            opt.set("foo").unwrap();
-            let val_after = opt.get().unwrap();
-            assert_eq!(Some(Value::String("auto".into())), val_before);
-            assert_eq!(Some(Value::String("foo".into())), val_after);
-        }
+        let sections: Vec<_> = pkg.sections().unwrap().collect();
+        assert_eq!(3, sections.len());
 
-        let mut opt = cfg
+        for section in &sections {
+            let channel = section.option("channel").unwrap().get().unwrap().unwrap();
+            match section.name().unwrap().as_str() {
+                "pdev0" => assert_eq!(Value::String("auto".into()), channel),
+                "pdev1" => assert_eq!(Value::List(vec!["44".into(), "48".into()]), channel),
+                _ => assert_eq!(Value::String("56".into()), channel),
+            }
+        }
+    }
+
+    #[test]
+    fn list_options() {
+        let (uci, tmp) = setup_uci().unwrap();
+        std::fs::write(
+            &tmp.path().join("config/wireless"),
+            "
+            config wifi-device 'pdev0'
+                list channel '44'
+                list channel '48'
+                option disabled '0'
+                option txpower '56'
+                option country 'DE'
+                option log_level '4'
+            ",
+        )
+        .unwrap();
+
+        let cfg = Config::from(uci);
+        let section = cfg
             .package("wireless")
             .unwrap()
             .unwrap()
-            .section("wifi-device", SectionIdent::Named("pdev1"))
-            .unwrap()
-            .option("channel")
+            .section("wifi-device", "pdev0")
             .unwrap();
-        opt.set("foo").unwrap();
-        opt.set("auto").unwrap();
-        println!("done!");
+        for opt in section.options().unwrap() {
+            let v = opt.get().unwrap().unwrap();
+            let expected = match opt.name() {
+                "channel" => {
+                    assert_eq!(Value::List(vec!["44".into(), "48".into()]), v);
+                    continue;
+                }
+                "disabled" => "0",
+                "txpower" => "56",
+                "country" => "DE",
+                "log_level" => "4",
+                _ => panic!("unexpected option: {}", opt.name()),
+            };
+            assert_eq!(Value::String(expected.into()), v);
+        }
     }
 }
