@@ -142,8 +142,9 @@ impl Section {
                 });
                 ptr.s = section_ptr;
 
-                // persist created index in the ident
-                self.ident = Arc::new(unsafe { Package::section_ident(section_ptr) });
+                // persist created name in the ident
+                let name = unsafe { CStr::from_ptr((*section_ptr).e.name) }.to_owned();
+                self.ident = Arc::new(SectionIdent::Named(name));
 
                 result
             }

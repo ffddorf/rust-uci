@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use libuci_sys::{uci_commit, uci_save, uci_section, uci_to_section, uci_type_UCI_TYPE_PACKAGE};
+use libuci_sys::{uci_commit, uci_save, uci_to_section, uci_type_UCI_TYPE_PACKAGE};
 
 use crate::{
     config::{handle_error, section::SectionIdent},
@@ -50,22 +50,6 @@ impl Package {
         }
     }
 
-    pub(crate) unsafe fn section_ident(section: *const uci_section) -> SectionIdent<CString> {
-        let elem = &raw const (*section).e;
-        let sections = &raw const (*(*section).package).sections;
-        match unsafe { *section }.anonymous {
-            true => UciListIter::new(sections)
-                .enumerate()
-                .find(|(_, sect_elem)| *sect_elem == elem)
-                .map(|(i, _)| SectionIdent::Indexed(i as i32))
-                .unwrap_or(SectionIdent::Anonymous),
-            false => {
-                let name = unsafe { CStr::from_ptr((*elem).name) }.to_owned();
-                SectionIdent::Named(name)
-            }
-        }
-    }
-
     pub fn sections(&self) -> Result<impl Iterator<Item = Section>> {
         let mut uci = self.uci.lock().unwrap();
         let ptr = match self.ptr_opt(&mut uci)? {
@@ -78,12 +62,12 @@ impl Package {
         Ok(UciListIter::new(ptr).map(move |elem| {
             let sect = unsafe { uci_to_section(elem) };
             let type_ = unsafe { CStr::from_ptr((*sect).type_) }.to_owned();
-            let ident = unsafe { Self::section_ident(sect) };
+            let name = unsafe { CStr::from_ptr((*elem).name) }.to_owned();
             Section::new(
                 Arc::clone(&uci),
                 Arc::clone(&package),
                 Arc::new(type_),
-                Arc::new(ident),
+                Arc::new(SectionIdent::Named(name)),
             )
         }))
     }
