@@ -46,6 +46,30 @@ where
     }
 }
 
+impl<'a> From<&'a str> for SectionIdent<&'a str> {
+    fn from(value: &'a str) -> Self {
+        Self::Named(value)
+    }
+}
+
+impl From<String> for SectionIdent<String> {
+    fn from(value: String) -> Self {
+        Self::Named(value)
+    }
+}
+
+impl From<i32> for SectionIdent<String> {
+    fn from(value: i32) -> Self {
+        Self::Indexed(value)
+    }
+}
+
+impl From<()> for SectionIdent<String> {
+    fn from(_value: ()) -> Self {
+        Self::Anonymous
+    }
+}
+
 /// represents a single section
 /// parent to different [Option]s
 pub struct Section {

@@ -90,15 +90,15 @@ impl Package {
 
     /// return a single [Section] by its name
     /// also works if the section is not defined yet
-    pub fn section(
+    pub fn section<T: AsRef<str>>(
         &self,
         type_: impl AsRef<str>,
-        ident: SectionIdent<impl AsRef<str>>,
+        ident: impl Into<SectionIdent<T>>,
     ) -> Result<Section> {
         let type_ = CString::new(type_.as_ref())?;
 
         use SectionIdent::*;
-        let ident = match ident {
+        let ident = match ident.into() {
             Anonymous => Anonymous,
             Indexed(i) => Indexed(i),
             Named(n) => Named(CString::new(n.as_ref())?),
