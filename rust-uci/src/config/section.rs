@@ -185,7 +185,7 @@ impl Section {
     }
 
     /// lists all options in this section
-    pub fn options(&self) -> Result<impl Iterator<Item = Option>> {
+    pub fn options(&self) -> Result<impl Iterator<Item = OptionMut>> {
         let mut uci = self.uci.lock().unwrap();
         let section = self.ptr(&mut uci)?.map(|p| unsafe { *p.s });
         let option_list = section
