@@ -33,10 +33,11 @@ pub use bindings::{
     uci_list_configs, uci_load, uci_lookup_next, uci_lookup_ptr, uci_option, uci_option_type,
     uci_option_type_UCI_TYPE_LIST, uci_option_type_UCI_TYPE_STRING, uci_package,
     uci_parse_argument, uci_parse_context, uci_parse_option, uci_parse_ptr, uci_parse_section,
-    uci_perror, uci_ptr, uci_ptr_UCI_LOOKUP_COMPLETE, uci_rename, uci_reorder_section, uci_revert,
-    uci_save, uci_section, uci_set, uci_set_backend, uci_set_confdir, uci_set_savedir, uci_type,
-    uci_type_UCI_TYPE_OPTION, uci_type_UCI_TYPE_PACKAGE, uci_type_UCI_TYPE_SECTION,
-    uci_type_UCI_TYPE_UNSPEC, uci_unload, uci_validate_text, UCI_ERR_NOTFOUND, UCI_OK,
+    uci_perror, uci_ptr, uci_ptr_UCI_LOOKUP_COMPLETE, uci_ptr_UCI_LOOKUP_EXTENDED, uci_rename,
+    uci_reorder_section, uci_revert, uci_save, uci_section, uci_set, uci_set_backend,
+    uci_set_confdir, uci_set_savedir, uci_type, uci_type_UCI_TYPE_OPTION,
+    uci_type_UCI_TYPE_PACKAGE, uci_type_UCI_TYPE_SECTION, uci_type_UCI_TYPE_UNSPEC, uci_unload,
+    uci_validate_text, UCI_ERR_NOTFOUND, UCI_OK,
 };
 
 #[allow(clippy::ptr_offset_with_cast)]

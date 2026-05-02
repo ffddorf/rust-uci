@@ -1,5 +1,5 @@
 use std::{
-    ffi::{c_char, CStr},
+    ffi::{c_char, CStr, CString},
     option::Option as StdOption,
     sync::{Arc, Mutex},
 };
@@ -17,7 +17,6 @@ mod package;
 use package::Package;
 
 mod ptr;
-use ptr::UciPtr;
 
 mod section;
 
@@ -52,9 +51,8 @@ impl Iterator for PackageIter {
             return None;
         }
         self.ptr = unsafe { self.ptr.add(1) };
-        let name = unsafe { CStr::from_ptr(name_ptr.cast()) }.to_str().unwrap();
-        let ptr = UciPtr::new(Arc::clone(&self.uci));
-        Some(Package::new(ptr.with_package_name(name).unwrap()))
+        let name = unsafe { CStr::from_ptr(name_ptr.cast()) }.to_owned();
+        Some(Package::new(Arc::clone(&self.uci), Arc::new(name)))
     }
 }
 
@@ -65,10 +63,11 @@ impl Config {
 
     /// return a single [Package] by its name
     /// also works if the package is not defined yet
-    pub fn package<'a>(&self, name: impl AsRef<str>) -> Result<Package> {
-        let ptr = ptr::UciPtr::new(Arc::clone(&self.uci));
-        let ptr = ptr.with_package_name(name)?;
-        Ok(Package::new(ptr))
+    pub fn package<'a>(&self, name: impl AsRef<str>) -> Result<StdOption<Package>> {
+        let cname = CString::new(name.as_ref())?;
+        let pkg = Package::new(Arc::clone(&self.uci), Arc::new(cname));
+        let mut uci = self.uci.lock().unwrap();
+        Ok(pkg.ptr(&mut uci)?.map(|_| pkg))
     }
 
     /// list all [Package]s in the config
@@ -106,7 +105,7 @@ fn handle_error(uci: &mut Uci, result: i32) -> Result<Option<()>> {
 mod tests {
     use tempfile::{tempdir, TempDir};
 
-    use super::{option::Value, *};
+    use super::{option::Value, section::SectionIdent, *};
 
     fn setup_uci() -> Result<(Uci, TempDir)> {
         let mut uci = Uci::new()?;
@@ -139,8 +138,10 @@ mod tests {
         .unwrap();
 
         let cfg: Config = uci.into();
-        let pkg = cfg.package("wireless").unwrap();
-        let sect = pkg.section("wifi-device", "pdev0").unwrap();
+        let pkg = cfg.package("wireless").unwrap().unwrap();
+        let sect = pkg
+            .section("wifi-device", SectionIdent::Named("pdev0"))
+            .unwrap();
         let opt = sect.option("channel").unwrap();
         let val = opt.get().unwrap();
         assert_eq!(Some(option::Value::String("auto".into())), val);
@@ -191,9 +192,9 @@ mod tests {
         .unwrap();
 
         let cfg: Config = uci.into();
-        let pkg = cfg.package("wireless").unwrap();
+        let pkg = cfg.package("wireless").unwrap().unwrap();
         for section in pkg.sections().unwrap() {
-            let opt = section.option("channel").unwrap();
+            let mut opt = section.option("channel").unwrap();
             let val_before = opt.get().unwrap();
             opt.set("foo").unwrap();
             let val_after = opt.get().unwrap();
@@ -201,15 +202,16 @@ mod tests {
             assert_eq!(Some(Value::String("foo".into())), val_after);
         }
 
-        let opt = cfg
+        let mut opt = cfg
             .package("wireless")
             .unwrap()
-            .section("wifi-device", "pdev1")
+            .unwrap()
+            .section("wifi-device", SectionIdent::Named("pdev1"))
             .unwrap()
             .option("channel")
             .unwrap();
-        let updated1 = opt.set("foo").unwrap();
-        let updated2 = opt.set("auto").unwrap();
+        opt.set("foo").unwrap();
+        opt.set("auto").unwrap();
         println!("done!");
     }
 }

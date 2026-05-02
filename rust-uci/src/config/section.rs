@@ -1,98 +1,202 @@
 use std::{
     ffi::{CStr, CString},
     iter,
+    ops::DerefMut,
     option::Option as StdOption,
-    sync::Arc,
+    ptr,
+    sync::{Arc, Mutex},
 };
 
-use libuci_sys::uci_set;
+use libuci_sys::{
+    uci_add_section, uci_ptr_UCI_LOOKUP_EXTENDED, uci_set, uci_type_UCI_TYPE_SECTION,
+};
 
-use crate::{config::handle_error, libuci_locked, Result};
+use crate::{config::handle_error, error::Error, libuci_locked, Result, Uci};
 
 use super::{
     option::Option,
     package::Package,
-    ptr::{UciListIter, UciPtr, PTR_STAGE_SECTION},
+    ptr::{UciListIter, UciPtr},
 };
+
+pub enum SectionIdent<T> {
+    Anonymous,
+    Indexed(i32),
+    Named(T),
+}
+
+impl<T> SectionIdent<T>
+where
+    T: AsRef<CStr>,
+{
+    pub(crate) fn inner_ident(&self, type_: impl AsRef<CStr>) -> StdOption<CString> {
+        match self {
+            SectionIdent::Anonymous => None,
+            SectionIdent::Indexed(i) => {
+                let type_ = type_.as_ref().to_bytes();
+                let indexer = format!("[{i}]").into_bytes();
+                let ident: Vec<_> = iter::once('@' as u8)
+                    .chain(type_.into_iter().copied())
+                    .chain(indexer)
+                    .collect();
+                Some(CString::new(ident).unwrap())
+            }
+            SectionIdent::Named(name) => Some(name.as_ref().to_owned()),
+        }
+    }
+}
 
 /// represents a single section
 /// parent to different [Option]s
 pub struct Section {
-    type_: Arc<str>,
-    ptr: UciPtr<PTR_STAGE_SECTION>,
+    uci: Arc<Mutex<Uci>>,
+    package: Arc<CString>,
+    pub(crate) type_: Arc<CString>,
+    pub(crate) ident: Arc<SectionIdent<CString>>,
 }
 
 impl Section {
-    pub(crate) fn new(ptr: UciPtr<PTR_STAGE_SECTION>, type_: Arc<str>) -> Self {
-        Self { ptr, type_ }
-    }
-
-    fn create_impl(&self) -> Result<UciPtr<PTR_STAGE_SECTION>> {
-        let type_ = CString::new(self.type_.as_bytes())?;
-
-        // avoid modifying the long-lived uci_ptr
-        let mut ptr = self.ptr.clone();
-        ptr.value = type_.as_ptr();
-
-        let uci = Arc::clone(&self.ptr.uci);
-        let mut uci = uci.lock().unwrap();
-        let result = libuci_locked!(uci, unsafe { uci_set(uci.ctx, &mut ptr) });
-        handle_error(&mut uci, result)?;
-
-        self.ptr.replace(ptr, iter::once(type_))
-    }
-
-    pub fn create(&self) -> Result<()> {
-        self.create_impl()?;
-        Ok(())
-    }
-
-    pub(crate) fn ensure(&self) -> Result<UciPtr<PTR_STAGE_SECTION>> {
-        match self.ptr.lookup()? {
-            Some(ptr) => return Ok(ptr),
-            None => self.create_impl(),
+    pub(crate) fn new(
+        uci: Arc<Mutex<Uci>>,
+        package: Arc<CString>,
+        type_: Arc<CString>,
+        ident: Arc<SectionIdent<CString>>,
+    ) -> Self {
+        Self {
+            uci,
+            package,
+            type_,
+            ident,
         }
     }
 
-    /// returns the name of the section item
-    pub fn name(&self) -> Result<&str> {
-        Ok(unsafe { CStr::from_ptr(self.ptr.section) }.to_str()?)
+    pub(crate) fn ptr<'a>(&'_ self, uci: &'a mut Uci) -> Result<StdOption<UciPtr<'a>>> {
+        let mut ptr = UciPtr::new();
+
+        let _ident_raw = match &*self.ident {
+            SectionIdent::Anonymous => return Ok(None),
+            i @ SectionIdent::Indexed(_) => {
+                let ident = i.inner_ident(self.type_.as_ref()).unwrap();
+                ptr.section = ident.as_ptr();
+                ptr.flags |= uci_ptr_UCI_LOOKUP_EXTENDED;
+                Some(ident) // keep this alive
+            }
+            SectionIdent::Named(s) => {
+                ptr.section = s.as_ptr();
+                None
+            }
+        };
+
+        ptr.target = uci_type_UCI_TYPE_SECTION;
+        ptr.package = self.package.as_c_str().as_ptr();
+        ptr.lookup(uci)
     }
 
-    /// returns the type of the section, if it exists
-    pub fn type_(&self) -> Result<StdOption<String>> {
-        let ptr = match self.ptr.lookup()? {
-            Some(ptr) => ptr,
-            None => return Ok(None),
+    pub(crate) fn ensure<'a>(&'_ mut self, uci: StdOption<&'a mut Uci>) -> Result<UciPtr<'a>> {
+        let mut guard = None;
+        let uci = match uci {
+            Some(uci) => uci,
+            None => {
+                guard.replace(self.uci.lock().unwrap());
+                guard.as_deref_mut().unwrap()
+            }
         };
-        Ok(Some(
-            unsafe { CStr::from_ptr((*ptr.s).type_) }
-                .to_str()?
-                .to_owned(),
-        ))
+        let pkg_ptr = self
+            .package()
+            .ptr(uci)?
+            .ok_or_else(|| Error::EntryNotFound {
+                entry_identifier: self.package.to_str().unwrap().to_owned(),
+            })?;
+
+        let mut ptr = UciPtr::new();
+        ptr.target = uci_type_UCI_TYPE_SECTION;
+        ptr.p = pkg_ptr.p;
+
+        let result = match self.ident.as_ref() {
+            SectionIdent::Anonymous => {
+                let mut section_ptr = ptr::null_mut();
+                let result = libuci_locked!(uci, unsafe {
+                    uci_add_section(uci.ctx, ptr.p, self.type_.as_ptr(), &mut section_ptr)
+                });
+                ptr.s = section_ptr;
+
+                // persist created index in the ident
+                self.ident = Arc::new(unsafe { Package::section_ident(section_ptr) });
+
+                result
+            }
+            i @ SectionIdent::Indexed(_) => {
+                let ident = i.inner_ident(self.type_.as_ref()).unwrap();
+                ptr.flags |= uci_ptr_UCI_LOOKUP_EXTENDED;
+                ptr.section = ident.as_c_str().as_ptr();
+                ptr.value = self.type_.as_ptr();
+                let result = libuci_locked!(uci, unsafe { uci_set(uci.ctx, ptr.deref_mut()) });
+                ptr.section = ptr::null(); // CString is dropped after this context
+                result
+            }
+            SectionIdent::Named(name) => {
+                ptr.section = name.as_ptr();
+                ptr.value = self.type_.as_ptr();
+                libuci_locked!(uci, unsafe { uci_set(uci.ctx, ptr.deref_mut()) })
+            }
+        };
+        handle_error(uci, result)?;
+
+        Ok(ptr)
+    }
+
+    pub fn create(&mut self) -> Result<()> {
+        self.ensure(None)?;
+        Ok(())
+    }
+
+    /// returns the name of the section item, None if it's anonymous
+    pub fn name(&self) -> StdOption<String> {
+        let ident = self.ident.as_ref().inner_ident(self.type_.as_ref());
+        ident.map(|cstr| cstr.into_string().unwrap())
+    }
+
+    /// returns the type of the section
+    pub fn type_(&self) -> &str {
+        self.type_.to_str().unwrap()
     }
 
     /// lists all options in this section
-    pub fn options(&self) -> impl Iterator<Item = Option> + use<'_> {
-        let iter = unsafe { UciListIter::new(&(*self.ptr.s).options) };
-        iter.map(move |elem| {
-            let name = unsafe { CStr::from_ptr((*elem).name) }.to_str().unwrap();
+    pub fn options(&self) -> Result<impl Iterator<Item = Option>> {
+        let mut uci = self.uci.lock().unwrap();
+        let ptr = match self.ptr(&mut uci)? {
+            Some(ptr) => &unsafe { *ptr.s }.options,
+            None => ptr::null(),
+        };
+
+        let uci = Arc::clone(&self.uci);
+        let package = Arc::clone(&self.package);
+        let section_type = Arc::clone(&self.type_);
+        let section_ident = Arc::clone(&self.ident);
+        Ok(UciListIter::new(ptr).map(move |elem| {
+            let name = unsafe { CStr::from_ptr((*elem).name) }.to_owned();
             Option::new(
-                self.ptr.with_option_name(name).unwrap(),
-                Arc::clone(&self.type_),
+                Arc::clone(&uci),
+                Arc::clone(&package),
+                (Arc::clone(&section_type), Arc::clone(&section_ident)),
+                Arc::new(name),
             )
-        })
+        }))
     }
 
     /// returns a specific [Option] by name
     /// also works if the option is not defined yet
     pub fn option(&self, name: impl AsRef<str>) -> Result<Option> {
-        let ptr = self.ptr.with_option_name(name)?;
-        Ok(Option::new(ptr, Arc::clone(&self.type_)))
+        let name = CString::new(name.as_ref())?;
+        Ok(Option::new(
+            Arc::clone(&self.uci),
+            Arc::clone(&self.package),
+            (Arc::clone(&self.type_), Arc::clone(&self.ident)),
+            Arc::new(name),
+        ))
     }
 
     pub fn package(&self) -> Package {
-        let ptr = self.ptr.parent();
-        Package::new(ptr)
+        Package::new(Arc::clone(&self.uci), Arc::clone(&self.package))
     }
 }

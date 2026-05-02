@@ -1,59 +1,101 @@
 use std::{
     ffi::{CStr, CString},
+    ops::DerefMut,
     option::Option as StdOption,
-    ptr,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use libuci_sys::{
     uci_add_list, uci_foreach_element, uci_option_type_UCI_TYPE_LIST,
-    uci_option_type_UCI_TYPE_STRING, uci_set,
+    uci_option_type_UCI_TYPE_STRING, uci_set, uci_type_UCI_TYPE_OPTION,
 };
 
-use crate::{config::handle_error, error::Error, libuci_locked, Result};
+use crate::{config::handle_error, error::Error, libuci_locked, Result, Uci};
 
 use super::{
-    ptr::{UciPtr, PTR_STAGE_OPTION},
-    section::Section,
+    ptr::UciPtr,
+    section::{Section, SectionIdent},
 };
 
 /// represents an option within a [Section]
 pub struct Option {
-    ptr: UciPtr<PTR_STAGE_OPTION>,
-    section_type: Arc<str>,
+    uci: Arc<Mutex<Uci>>,
+    package: Arc<CString>,
+    section: (Arc<CString>, Arc<SectionIdent<CString>>),
+    name: Arc<CString>,
 }
 
 impl Option {
-    pub(crate) fn new(ptr: UciPtr<PTR_STAGE_OPTION>, section_type: Arc<str>) -> Option {
-        Option { ptr, section_type }
+    pub(crate) fn new(
+        uci: Arc<Mutex<Uci>>,
+        package: Arc<CString>,
+        section: (Arc<CString>, Arc<SectionIdent<CString>>),
+        name: Arc<CString>,
+    ) -> Option {
+        Option {
+            uci,
+            package,
+            section,
+            name,
+        }
+    }
+
+    fn ptr<'a>(&'_ self, uci: &'a mut Uci) -> Result<StdOption<UciPtr<'a>>> {
+        let section = match self.section().ptr(uci)? {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+
+        let mut ptr = UciPtr::new();
+        ptr.target = uci_type_UCI_TYPE_OPTION;
+        ptr.p = section.p;
+        ptr.s = section.s;
+        ptr.option = self.name.as_ptr();
+        ptr.lookup(uci)
+    }
+
+    fn ptr_ensure<'a>(&'a mut self) -> Result<UciPtr<'a>> {
+        let mut uci = self.uci.lock().unwrap();
+        let mut section = self.section();
+        let section_ptr = section.ensure(Some(&mut uci))?;
+
+        // update ident to match newly created item
+        self.section.1 = Arc::clone(&section.ident);
+
+        let mut ptr = UciPtr::new();
+        ptr.target = uci_type_UCI_TYPE_OPTION;
+        ptr.p = section_ptr.p;
+        ptr.s = section_ptr.s;
+        ptr.option = self.name.as_ptr();
+        Ok(ptr)
     }
 
     /// name of the option
-    pub fn name(&self) -> Result<&str> {
-        Ok(unsafe { CStr::from_ptr((*self.ptr).option) }.to_str()?)
+    pub fn name(&self) -> &str {
+        self.name.to_str().unwrap()
     }
 
     pub fn section(&self) -> Section {
-        let ptr = self.ptr.parent();
-        Section::new(ptr, Arc::clone(&self.section_type))
+        Section::new(
+            Arc::clone(&self.uci),
+            Arc::clone(&self.package),
+            Arc::clone(&self.section.0),
+            Arc::clone(&self.section.1),
+        )
     }
 
     /// sets the value of the option, overriding the previous value
     /// will create the [Package] or [Section] along the way if they do
     /// not exist
-    pub fn set(&self, value: impl AsRef<str>) -> Result<()> {
+    pub fn set(&mut self, value: impl AsRef<str>) -> Result<()> {
         let value = CString::new(value.as_ref())?;
 
-        let section = self.section().ensure()?;
-
-        // avoid modifying the long-lived uci_ptr
-        let mut ptr = self.ptr.clone();
-        ptr.s = section.s;
-        ptr.section = ptr::null();
+        let mut ptr = self.ptr_ensure()?;
         ptr.value = value.as_ptr();
+        let ptr = ptr.deref_mut() as *mut _;
 
-        let mut uci = self.ptr.uci.lock().unwrap();
-        let result = libuci_locked!(uci, { unsafe { uci_set(uci.ctx, &mut ptr) } });
+        let mut uci = self.uci.lock().unwrap();
+        let result = libuci_locked!(uci, { unsafe { uci_set(uci.ctx, ptr) } });
         handle_error(&mut uci, result)?;
 
         Ok(())
@@ -65,15 +107,15 @@ impl Option {
     /// - turn a single-value option into a list
     ///
     /// returns the resulting value
-    pub fn add_list<'a>(&'a self, value: impl AsRef<str>) -> Result<()> {
+    pub fn add_list(&mut self, value: impl AsRef<str>) -> Result<()> {
         let value = CString::new(value.as_ref())?;
 
-        // avoid modifying the existing uci_ptr
-        let mut ptr = self.ptr.clone();
+        let mut ptr = self.ptr_ensure()?;
         ptr.value = value.as_ptr();
+        let ptr = ptr.deref_mut() as *mut _;
 
-        let mut uci = self.ptr.uci.lock().unwrap();
-        let result = libuci_locked!(uci, { unsafe { uci_add_list(uci.ctx, &mut ptr) } });
+        let mut uci = self.uci.lock().unwrap();
+        let result = libuci_locked!(uci, { unsafe { uci_add_list(uci.ctx, ptr) } });
         handle_error(&mut uci, result)?;
 
         Ok(())
@@ -81,7 +123,8 @@ impl Option {
 
     /// returns the current value of the option, None if not set
     pub fn get<'a>(&'a self) -> Result<StdOption<Value>> {
-        let ptr = match self.ptr.lookup()? {
+        let mut uci = self.uci.lock().unwrap();
+        let ptr = match self.ptr(&mut uci)? {
             Some(ptr) => ptr,
             None => return Ok(None),
         };
