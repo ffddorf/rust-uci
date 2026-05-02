@@ -1,6 +1,8 @@
 use std::{
     ffi::{CStr, CString},
     option::Option as StdOption,
+    ptr,
+    sync::Arc,
 };
 
 use libuci_sys::{
@@ -10,21 +12,30 @@ use libuci_sys::{
 
 use crate::{config::handle_error, error::Error, libuci_locked, Result};
 
-use super::ptr::{UciPtr, PTR_STAGE_OPTION};
+use super::{
+    ptr::{UciPtr, PTR_STAGE_OPTION},
+    section::Section,
+};
 
 /// represents an option within a [Section]
 pub struct Option {
     ptr: UciPtr<PTR_STAGE_OPTION>,
+    section_type: Arc<str>,
 }
 
 impl Option {
-    pub(crate) fn new(ptr: UciPtr<PTR_STAGE_OPTION>) -> Option {
-        Option { ptr }
+    pub(crate) fn new(ptr: UciPtr<PTR_STAGE_OPTION>, section_type: Arc<str>) -> Option {
+        Option { ptr, section_type }
     }
 
     /// name of the option
     pub fn name(&self) -> Result<&str> {
         Ok(unsafe { CStr::from_ptr((*self.ptr).option) }.to_str()?)
+    }
+
+    pub fn section(&self) -> Section {
+        let ptr = self.ptr.parent();
+        Section::new(ptr, Arc::clone(&self.section_type))
     }
 
     /// sets the value of the option, overriding the previous value
@@ -33,8 +44,12 @@ impl Option {
     pub fn set(&self, value: impl AsRef<str>) -> Result<()> {
         let value = CString::new(value.as_ref())?;
 
+        let section = self.section().ensure()?;
+
         // avoid modifying the long-lived uci_ptr
         let mut ptr = self.ptr.clone();
+        ptr.s = section.s;
+        ptr.section = ptr::null();
         ptr.value = value.as_ptr();
 
         let mut uci = self.ptr.uci.lock().unwrap();

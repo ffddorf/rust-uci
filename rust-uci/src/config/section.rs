@@ -1,5 +1,6 @@
 use std::{
     ffi::{CStr, CString},
+    iter,
     option::Option as StdOption,
     sync::Arc,
 };
@@ -10,22 +11,24 @@ use crate::{config::handle_error, libuci_locked, Result};
 
 use super::{
     option::Option,
+    package::Package,
     ptr::{UciListIter, UciPtr, PTR_STAGE_SECTION},
 };
 
 /// represents a single section
 /// parent to different [Option]s
 pub struct Section {
+    type_: Arc<str>,
     ptr: UciPtr<PTR_STAGE_SECTION>,
 }
 
 impl Section {
-    pub(crate) fn new(ptr: UciPtr<PTR_STAGE_SECTION>) -> Self {
-        Self { ptr }
+    pub(crate) fn new(ptr: UciPtr<PTR_STAGE_SECTION>, type_: Arc<str>) -> Self {
+        Self { ptr, type_ }
     }
 
-    pub fn create(&self, type_: impl AsRef<str>) -> Result<()> {
-        let type_ = CString::new(type_.as_ref())?;
+    fn create_impl(&self) -> Result<UciPtr<PTR_STAGE_SECTION>> {
+        let type_ = CString::new(self.type_.as_bytes())?;
 
         // avoid modifying the long-lived uci_ptr
         let mut ptr = self.ptr.clone();
@@ -36,7 +39,19 @@ impl Section {
         let result = libuci_locked!(uci, unsafe { uci_set(uci.ctx, &mut ptr) });
         handle_error(&mut uci, result)?;
 
+        self.ptr.replace(ptr, iter::once(type_))
+    }
+
+    pub fn create(&self) -> Result<()> {
+        self.create_impl()?;
         Ok(())
+    }
+
+    pub(crate) fn ensure(&self) -> Result<UciPtr<PTR_STAGE_SECTION>> {
+        match self.ptr.lookup()? {
+            Some(ptr) => return Ok(ptr),
+            None => self.create_impl(),
+        }
     }
 
     /// returns the name of the section item
@@ -62,7 +77,10 @@ impl Section {
         let iter = unsafe { UciListIter::new(&(*self.ptr.s).options) };
         iter.map(move |elem| {
             let name = unsafe { CStr::from_ptr((*elem).name) }.to_str().unwrap();
-            Option::new(self.ptr.with_option_name(name).unwrap())
+            Option::new(
+                self.ptr.with_option_name(name).unwrap(),
+                Arc::clone(&self.type_),
+            )
         })
     }
 
@@ -70,6 +88,11 @@ impl Section {
     /// also works if the option is not defined yet
     pub fn option(&self, name: impl AsRef<str>) -> Result<Option> {
         let ptr = self.ptr.with_option_name(name)?;
-        Ok(Option::new(ptr))
+        Ok(Option::new(ptr, Arc::clone(&self.type_)))
+    }
+
+    pub fn package(&self) -> Package {
+        let ptr = self.ptr.parent();
+        Package::new(ptr)
     }
 }

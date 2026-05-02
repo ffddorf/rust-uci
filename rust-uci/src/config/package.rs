@@ -1,5 +1,7 @@
 use std::{ffi::CStr, sync::Arc};
 
+use libuci_sys::uci_to_section;
+
 use crate::Result;
 
 use super::{
@@ -32,14 +34,19 @@ impl Package {
         let ptr_inner = Arc::new(ptr);
         Ok(iter.map(move |elem| {
             let name = unsafe { CStr::from_ptr((*elem).name) }.to_str().unwrap();
-            Section::new(ptr_inner.with_section_name(name).unwrap())
+            let sect = unsafe { uci_to_section(elem) };
+            let type_ = unsafe { CStr::from_ptr((*sect).type_) }
+                .to_str()
+                .unwrap()
+                .into();
+            Section::new(ptr_inner.with_section_name(name).unwrap(), type_)
         }))
     }
 
     /// return a single [Section] by its name
     /// also works if the section is not defined yet
-    pub fn section(&self, name: impl AsRef<str>) -> Result<Section> {
+    pub fn section(&self, type_: impl AsRef<str>, name: impl AsRef<str>) -> Result<Section> {
         let ptr = self.ptr.with_section_name(name)?;
-        Ok(Section::new(ptr))
+        Ok(Section::new(ptr, type_.as_ref().into()))
     }
 }

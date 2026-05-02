@@ -140,7 +140,7 @@ mod tests {
 
         let cfg: Config = uci.into();
         let pkg = cfg.package("wireless").unwrap();
-        let sect = pkg.section("pdev0").unwrap();
+        let sect = pkg.section("wifi-device", "pdev0").unwrap();
         let opt = sect.option("channel").unwrap();
         let val = opt.get().unwrap();
         assert_eq!(Some(option::Value::String("auto".into())), val);
@@ -204,7 +204,7 @@ mod tests {
         let opt = cfg
             .package("wireless")
             .unwrap()
-            .section("pdev1")
+            .section("wifi-device", "pdev1")
             .unwrap()
             .option("channel")
             .unwrap();

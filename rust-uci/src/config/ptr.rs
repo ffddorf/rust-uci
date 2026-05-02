@@ -9,11 +9,12 @@ use std::{
 };
 
 use libuci_sys::{
-    list_to_element, uci_element, uci_list, uci_lookup_ptr, uci_ptr, uci_type_UCI_TYPE_OPTION,
-    uci_type_UCI_TYPE_PACKAGE, uci_type_UCI_TYPE_SECTION, uci_type_UCI_TYPE_UNSPEC,
+    list_to_element, uci_element, uci_list, uci_lookup_ptr, uci_ptr, uci_ptr_UCI_LOOKUP_COMPLETE,
+    uci_type_UCI_TYPE_OPTION, uci_type_UCI_TYPE_PACKAGE, uci_type_UCI_TYPE_SECTION,
+    uci_type_UCI_TYPE_UNSPEC,
 };
 
-use crate::{config::handle_error, libuci_locked, Result, Uci};
+use crate::{config::handle_error, error::Error, libuci_locked, Result, Uci};
 
 pub(super) struct UciListIter<'a> {
     list: *const uci_list,
@@ -145,21 +146,41 @@ impl UciPtr<PTR_STAGE_SECTION> {
                 .collect(),
         })
     }
+
+    pub fn parent(&self) -> UciPtr<PTR_STAGE_PACKAGE> {
+        let mut ptr = self.ptr.clone();
+        ptr.target = uci_type_UCI_TYPE_PACKAGE;
+        let section_ptr = ptr.section;
+        ptr.section = ptr::null();
+        UciPtr {
+            ptr,
+            uci: Arc::clone(&self.uci),
+            data: self
+                .data
+                .iter()
+                .filter(|v| v.as_ptr() != section_ptr)
+                .map(Arc::clone)
+                .collect(),
+        }
+    }
 }
 
-struct CapturingIter<T, I> {
-    inner: I,
-    capture: T,
-}
-
-impl<T, I> Iterator for CapturingIter<T, I>
-where
-    I: Iterator,
-{
-    type Item = I::Item;
-
-    fn next(&mut self) -> StdOption<Self::Item> {
-        self.inner.next()
+impl UciPtr<PTR_STAGE_OPTION> {
+    pub fn parent(&self) -> UciPtr<PTR_STAGE_SECTION> {
+        let mut ptr = self.ptr.clone();
+        ptr.target = uci_type_UCI_TYPE_SECTION;
+        let option_ptr = ptr.option;
+        ptr.option = ptr::null();
+        UciPtr {
+            ptr,
+            uci: Arc::clone(&self.uci),
+            data: self
+                .data
+                .iter()
+                .filter(|v| v.as_ptr() != option_ptr)
+                .map(Arc::clone)
+                .collect(),
+        }
     }
 }
 
@@ -170,11 +191,40 @@ impl<const S: usize> UciPtr<S> {
         let result = libuci_locked!(uci, {
             unsafe { uci_lookup_ptr(uci.ctx, &mut ptr, ptr::null_mut(), true) }
         });
-        Ok(handle_error(&mut uci, result)?.map(|_| UciPtr {
+        let ptr = match handle_error(&mut uci, result)? {
+            Some(_) => {
+                if ptr.flags & uci_ptr_UCI_LOOKUP_COMPLETE == 0 {
+                    return Ok(None);
+                }
+                ptr
+            }
+            None => return Ok(None),
+        };
+        Ok(Some(UciPtr {
             uci: Arc::clone(&self.uci),
             ptr,
             data: self.data.iter().map(Arc::clone).collect(),
         }))
+    }
+
+    pub fn replace(
+        &self,
+        ptr: uci_ptr,
+        extra_data: impl Iterator<Item = CString>,
+    ) -> Result<UciPtr<S>> {
+        if self.ptr.target != ptr.target {
+            return Err(Error::Message("Invalid target provided".into()));
+        }
+        Ok(UciPtr {
+            ptr,
+            uci: Arc::clone(&self.uci),
+            data: self
+                .data
+                .iter()
+                .map(Arc::clone)
+                .chain(extra_data.map(Arc::new))
+                .collect(),
+        })
     }
 }
 
