@@ -12,13 +12,15 @@ use crate::{
 };
 
 mod option;
+pub use option::{Option, OptionMut, Value};
 
 mod package;
-use package::Package;
+pub use package::Package;
 
 mod ptr;
 
 mod section;
+pub use section::{Section, SectionIdent};
 
 /// represents the root of the config tree
 /// It's the parent structure to [Package]s
@@ -111,7 +113,7 @@ impl Config {
     }
 }
 
-fn handle_error(uci: &mut Uci, result: i32) -> Result<Option<()>> {
+fn handle_error(uci: &mut Uci, result: i32) -> Result<StdOption<()>> {
     match result {
         UCI_OK => Ok(Some(())),
         UCI_ERR_NOTFOUND => {
