@@ -137,7 +137,7 @@ impl Section {
         let result = match self.ident.as_ref() {
             SectionIdent::Anonymous => {
                 let mut section_ptr = ptr::null_mut();
-                let result = libuci_locked!(uci, unsafe {
+                let result = libuci_locked!(unsafe {
                     uci_add_section(uci.ctx, ptr.p, self.type_.as_ptr(), &mut section_ptr)
                 });
                 ptr.s = section_ptr;
@@ -153,14 +153,14 @@ impl Section {
                 ptr.flags |= uci_ptr_UCI_LOOKUP_EXTENDED;
                 ptr.section = ident.as_c_str().as_ptr();
                 ptr.value = self.type_.as_ptr();
-                let result = libuci_locked!(uci, unsafe { uci_set(uci.ctx, ptr.deref_mut()) });
+                let result = libuci_locked!(unsafe { uci_set(uci.ctx, ptr.deref_mut()) });
                 ptr.section = ptr::null(); // CString is dropped after this context
                 result
             }
             SectionIdent::Named(name) => {
                 ptr.section = name.as_ptr();
                 ptr.value = self.type_.as_ptr();
-                libuci_locked!(uci, unsafe { uci_set(uci.ctx, ptr.deref_mut()) })
+                libuci_locked!(unsafe { uci_set(uci.ctx, ptr.deref_mut()) })
             }
         };
         handle_error(uci, result)?;

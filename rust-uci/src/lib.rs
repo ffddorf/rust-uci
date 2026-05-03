@@ -89,6 +89,12 @@ mod macros {
         ($self:ident, $call:expr) => {{
             // Lock global library mutex, if we aren't already holding it in a function call higher up
             // in the stack.
+            //
+            // todo(mraerino): This is dangerous for when $call has any code that
+            // calls `return` or uses the `?` postfix operator
+            // in those cases, the lock guard is dropped, but `$self.lock_held`
+            // is not set back to false, causing the next call to assume the lock
+            // is held when it is not
             let libuci_lock_guard = if !$self.lock_held {
                 let libuci_lock_guard = Some(
                     $crate::macros::LIBRARY_LOCK

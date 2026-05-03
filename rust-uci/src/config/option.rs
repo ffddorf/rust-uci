@@ -155,7 +155,7 @@ impl OptionMut {
         let ptr = ptr.deref_mut() as *mut _;
 
         let mut uci = self.uci.lock().unwrap();
-        let result = libuci_locked!(uci, { unsafe { uci_add_list(uci.ctx, ptr) } });
+        let result = libuci_locked!(unsafe { uci_add_list(uci.ctx, &raw mut *ptr.deref_mut()) });
         handle_error(&mut uci, result)?;
 
         Ok(())

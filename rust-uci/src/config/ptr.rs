@@ -103,9 +103,8 @@ impl<'a> UciPtr<'a> {
 
     pub fn lookup<'b>(&'_ mut self, uci: &'b mut Uci) -> Result<StdOption<UciPtr<'b>>> {
         let mut ptr = self.ptr.clone();
-        let result = libuci_locked!(uci, {
-            unsafe { uci_lookup_ptr(uci.ctx, &mut ptr, ptr::null_mut(), true) }
-        });
+        let result =
+            libuci_locked!(unsafe { uci_lookup_ptr(uci.ctx, &mut ptr, ptr::null_mut(), true) });
         let ptr = match handle_error(uci, result)? {
             Some(_) => {
                 if ptr.flags & uci_ptr_UCI_LOOKUP_COMPLETE == 0 {

@@ -118,7 +118,7 @@ impl Package {
     pub fn save(&mut self) -> Result<()> {
         let mut uci = self.uci.lock().unwrap();
         let pkg = self.ptr(&mut uci)?.p;
-        let result = libuci_locked!(uci, unsafe { uci_save(uci.ctx, pkg) });
+        let result = libuci_locked!(unsafe { uci_save(uci.ctx, pkg) });
         handle_error(&mut uci, result)?;
         Ok(())
     }
@@ -128,7 +128,7 @@ impl Package {
         let mut uci = self.uci.lock().unwrap();
         let mut pkg = self.ptr(&mut uci)?.p;
         // the uci cli seems to set `override=false` too, not sure what it means
-        let result = libuci_locked!(uci, unsafe { uci_commit(uci.ctx, &raw mut pkg, false) });
+        let result = libuci_locked!(unsafe { uci_commit(uci.ctx, &raw mut pkg, false) });
         handle_error(&mut uci, result)?;
         Ok(())
     }

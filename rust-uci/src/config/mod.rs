@@ -84,7 +84,7 @@ impl Config {
     pub fn packages<'a>(&self) -> Result<impl Iterator<Item = Package>> {
         let mut uci = self.uci.lock().unwrap();
         let mut list = std::ptr::null_mut();
-        let result = libuci_locked!(uci, { unsafe { uci_list_configs(uci.ctx, &mut list) } });
+        let result = libuci_locked!(unsafe { uci_list_configs(uci.ctx, &mut list) });
         let ptr = match handle_error(&mut uci, result)? {
             Some(_) => list,
             None => std::ptr::null_mut(),
