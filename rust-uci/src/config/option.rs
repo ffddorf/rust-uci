@@ -1,3 +1,4 @@
+use core::slice;
 use std::{
     ffi::{CStr, CString},
     ops::DerefMut,
@@ -166,26 +167,54 @@ impl OptionMut {
 #[derive(Debug)]
 pub enum Value {
     String(String),
-    Boolean(bool),
-    Integer(i64),
     List(Vec<String>),
 }
 
-impl From<String> for Value {
-    fn from(value: String) -> Self {
-        Self::String(value.into())
+impl Value {
+    pub fn to_str(&self) -> StdOption<&str> {
+        match self {
+            Value::String(n) => Some(n),
+            _ => None,
+        }
     }
 }
 
-impl From<bool> for Value {
-    fn from(value: bool) -> Self {
-        Self::Boolean(value)
+pub enum ValueIter<'a> {
+    String(StdOption<&'a String>),
+    List(slice::Iter<'a, String>),
+}
+
+impl<'a> Iterator for ValueIter<'a> {
+    type Item = &'a str;
+
+    fn next(&mut self) -> StdOption<Self::Item> {
+        match self {
+            ValueIter::String(opt) => opt.take(),
+            ValueIter::List(iter) => iter.next(),
+        }
+        .map(String::as_str)
     }
 }
 
-impl From<i64> for Value {
-    fn from(value: i64) -> Self {
-        Self::Integer(value)
+impl<'a> IntoIterator for &'a Value {
+    type Item = &'a str;
+
+    type IntoIter = ValueIter<'a>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            Value::String(val) => ValueIter::String(Some(val)),
+            Value::List(items) => ValueIter::List(items.iter()),
+        }
+    }
+}
+
+impl<T> From<T> for Value
+where
+    T: ToString,
+{
+    fn from(value: T) -> Self {
+        Self::String(value.to_string())
     }
 }
 
@@ -193,8 +222,6 @@ impl<'a> PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::String(l0), Self::String(r0)) => l0 == r0,
-            (Self::Boolean(l0), Self::Boolean(r0)) => l0 == r0,
-            (Self::Integer(l0), Self::Integer(r0)) => l0 == r0,
             (Self::List(l0), Self::List(r0)) => l0 == r0,
             _ => false,
         }
