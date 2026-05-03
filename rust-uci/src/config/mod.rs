@@ -340,9 +340,7 @@ mod tests {
         assert!(section.name().unwrap().len() > 0);
 
         let pkg = cfg.package("wireless").unwrap().unwrap();
-        for sect in pkg.sections().unwrap() {
-            println!("{}", sect.name().unwrap());
-        }
+        assert_eq!(2, pkg.sections().unwrap().count());
     }
 
     #[test]
