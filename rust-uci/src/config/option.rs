@@ -7,7 +7,7 @@ use std::{
 };
 
 use libuci_sys::{
-    uci_add_list, uci_foreach_element, uci_option_type_UCI_TYPE_LIST,
+    uci_add_list, uci_delete, uci_foreach_element, uci_option_type_UCI_TYPE_LIST,
     uci_option_type_UCI_TYPE_STRING, uci_set, uci_type_UCI_TYPE_OPTION,
 };
 
@@ -57,10 +57,9 @@ impl<const MUT: bool> Option<MUT> {
         ptr.lookup(uci)
     }
 
-    fn ptr_ensure<'a>(&'a mut self) -> Result<UciPtr<'a>> {
-        let mut uci = self.uci.lock().unwrap();
+    fn ptr_ensure<'a>(&'_ mut self, uci: &'a mut Uci) -> Result<UciPtr<'a>> {
         let mut section = self.section();
-        let section_ptr = section.ensure(Some(&mut uci))?;
+        let section_ptr = section.ensure(Some(uci))?;
 
         // update ident to match newly created item
         self.section.1 = Arc::clone(&section.ident);
@@ -128,17 +127,32 @@ impl OptionMut {
     /// sets the value of the option, overriding the previous value
     /// will create the [Package] or [Section] along the way if they do
     /// not exist
-    pub fn set(&mut self, value: impl AsRef<str>) -> Result<()> {
-        let value = CString::new(value.as_ref())?;
+    pub fn set(&mut self, value: impl Into<Value>) -> Result<()> {
+        let uci = Arc::clone(&self.uci);
+        let mut uci = uci.lock().unwrap();
+        let ptr = self.ptr_ensure(&mut uci)?;
+        let mut ptr: UciPtr<'static> = unsafe { std::mem::transmute(ptr) };
+        match value.into() {
+            Value::String(s) => {
+                let value = CString::new(s)?;
+                ptr.value = value.as_ptr();
 
-        let mut ptr = self.ptr_ensure()?;
-        ptr.value = value.as_ptr();
-        let ptr = ptr.deref_mut() as *mut _;
-
-        let mut uci = self.uci.lock().unwrap();
-        let result = libuci_locked!(uci, { unsafe { uci_set(uci.ctx, ptr) } });
-        handle_error(&mut uci, result)?;
-
+                let result = libuci_locked!(unsafe { uci_set(uci.ctx, &raw mut *ptr.deref_mut()) });
+                handle_error(&mut uci, result)?;
+            }
+            Value::List(items) => {
+                libuci_locked!({
+                    let result = unsafe { uci_delete(uci.ctx, &raw mut *ptr.deref_mut()) };
+                    handle_error(&mut uci, result)?;
+                    for item in items {
+                        let val = CString::new(item)?;
+                        ptr.value = val.as_ptr();
+                        let result = unsafe { uci_add_list(uci.ctx, &raw mut *ptr.deref_mut()) };
+                        handle_error(&mut uci, result)?;
+                    }
+                });
+            }
+        };
         Ok(())
     }
 
@@ -151,9 +165,10 @@ impl OptionMut {
     pub fn add_list(&mut self, value: impl AsRef<str>) -> Result<()> {
         let value = CString::new(value.as_ref())?;
 
-        let mut ptr = self.ptr_ensure()?;
+        let uci = Arc::clone(&self.uci);
+        let mut uci = uci.lock().unwrap();
+        let mut ptr = self.ptr_ensure(&mut uci)?;
         ptr.value = value.as_ptr();
-        let ptr = ptr.deref_mut() as *mut _;
 
         let mut uci = self.uci.lock().unwrap();
         let result = libuci_locked!(unsafe { uci_add_list(uci.ctx, &raw mut *ptr.deref_mut()) });
