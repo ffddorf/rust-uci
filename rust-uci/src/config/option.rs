@@ -1,5 +1,6 @@
 use core::slice;
 use std::{
+    borrow::Cow,
     ffi::{CStr, CString},
     ops::DerefMut,
     option::Option as StdOption,
@@ -186,6 +187,11 @@ pub enum Value {
 }
 
 impl Value {
+    pub fn list<'a, I: Into<Cow<'a, str>>>(val: impl IntoIterator<Item = I>) -> Self {
+        let v = val.into_iter().map(|s| s.into().to_string()).collect();
+        Self::List(v)
+    }
+
     pub fn to_str(&self) -> StdOption<&str> {
         match self {
             Value::String(n) => Some(n),
