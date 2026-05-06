@@ -66,6 +66,8 @@ use std::sync::Mutex;
 use std::{
     ffi::{CStr, CString},
     ops::{Deref, DerefMut},
+    os::unix::ffi::OsStrExt,
+    path::Path,
 };
 
 use crate::error::{Error, Result};
@@ -141,27 +143,23 @@ unsafe impl Sync for Uci {}
 /// - [`uci_context`] can be freed safely from another thread.
 unsafe impl Send for Uci {}
 
-/// Contains the native `uci_ptr` and it's raw `CString` key
-/// this is done so the raw `CString` stays alive until the `uci_ptr` is dropped
-struct UciPtr(uci_ptr, *mut std::os::raw::c_char);
+/// Contains the native `uci_ptr` and it's associated key.
+struct UciPtr {
+    ptr: uci_ptr,
+    _key: CString,
+}
 
 impl Deref for UciPtr {
     type Target = uci_ptr;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.ptr
     }
 }
 
 impl DerefMut for UciPtr {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl Drop for UciPtr {
-    fn drop(&mut self) {
-        drop(unsafe { CString::from_raw(self.1) });
+        &mut self.ptr
     }
 }
 
@@ -179,7 +177,7 @@ impl Drop for UciPtr {
 /// and returns an `Err` otherwise.
 unsafe fn char_ptr_to_str<'a>(ptr: *mut c_char) -> Result<&'a str> {
     if ptr.is_null() {
-        return Err(Error::Message("config dir was nullptr".into()));
+        return Err(Error::Message("char* was nullptr".into()));
     }
     // Safety: the ptr is not null.
     // The safety assumption is that ptr points to
@@ -203,24 +201,24 @@ impl Uci {
     }
 
     /// Sets the config directory of UCI, this is `/etc/config` by default.
-    pub fn set_config_dir(&mut self, config_dir: &str) -> Result<()> {
+    pub fn set_config_dir(&mut self, config_dir: impl AsRef<Path>) -> Result<()> {
         libuci_locked!(self, {
-            let result = unsafe {
-                let raw = CString::new(config_dir)?;
-                uci_set_confdir(
-                    self.ctx,
-                    raw.as_bytes_with_nul()
-                        .as_ptr()
-                        .cast::<std::os::raw::c_char>(),
-                )
+            let result = {
+                let config_dir = config_dir.as_ref().as_os_str();
+                let config_dir = CString::new(config_dir.as_bytes())?;
+                // Safety:
+                // * self.ctx points to a valid UCI context.
+                // * config_dir is a valid, null-terminated C-string.
+                // * config_dir is a valid directory path.
+                unsafe { uci_set_confdir(self.ctx, config_dir.as_ptr()) }
             };
             if result == UCI_OK {
-                debug!("Set config dir to: {}", config_dir);
+                debug!("Set config dir to: {}", config_dir.as_ref().display());
                 Ok(())
             } else {
                 Err(Error::Message(format!(
                     "Cannot set config dir: {}, {}",
-                    config_dir,
+                    config_dir.as_ref().display(),
                     self.get_last_error()
                         .unwrap_or_else(|_| String::from("Unknown"))
                 )))
@@ -246,24 +244,24 @@ impl Uci {
     }
 
     /// Sets the save directory of UCI, this is `/tmp/.uci` by default.
-    pub fn set_save_dir(&mut self, save_dir: &str) -> Result<()> {
-        let raw = CString::new(save_dir)?;
+    pub fn set_save_dir(&mut self, save_dir: impl AsRef<Path>) -> Result<()> {
         libuci_locked!(self, {
-            let result = unsafe {
-                uci_set_savedir(
-                    self.ctx,
-                    raw.as_bytes_with_nul()
-                        .as_ptr()
-                        .cast::<std::os::raw::c_char>(),
-                )
+            let result = {
+                let save_dir = save_dir.as_ref().as_os_str();
+                let save_dir = CString::new(save_dir.as_bytes())?;
+                // Safety:
+                // * self.ctx points to a valid UCI context.
+                // * save_dir is a valid, null-terminated C-string.
+                // * save_dir is a valid directory path.
+                unsafe { uci_set_savedir(self.ctx, save_dir.as_ptr()) }
             };
             if result == UCI_OK {
-                debug!("Set save dir to: {}", save_dir);
+                debug!("Set save dir to: {}", save_dir.as_ref().display());
                 Ok(())
             } else {
                 Err(Error::Message(format!(
                     "Cannot set save dir: {}, {}",
-                    save_dir,
+                    save_dir.as_ref().display(),
                     self.get_last_error()
                         .unwrap_or_else(|_| String::from("Unknown"))
                 )))
@@ -298,7 +296,7 @@ impl Uci {
     pub fn delete(&mut self, identifier: &str) -> Result<()> {
         let mut ptr = self.get_ptr(identifier)?;
         libuci_locked!(self, {
-            let result = unsafe { uci_delete(self.ctx, &mut ptr.0) };
+            let result = unsafe { uci_delete(self.ctx, ptr.deref_mut()) };
             if result != UCI_OK {
                 return Err(Error::Message(format!(
                     "Could not delete uci key: {}, {}, {}",
@@ -333,7 +331,7 @@ impl Uci {
     pub fn revert(&mut self, identifier: &str) -> Result<()> {
         libuci_locked!(self, {
             let mut ptr = self.get_ptr(identifier)?;
-            let result = unsafe { uci_revert(self.ctx, &mut ptr.0) };
+            let result = unsafe { uci_revert(self.ctx, ptr.deref_mut()) };
             if result != UCI_OK {
                 return Err(Error::Message(format!(
                     "Could not revert uci key: {}, {}, {}",
@@ -379,7 +377,7 @@ impl Uci {
                     identifier, val
                 )));
             }
-            let result = unsafe { uci_set(self.ctx, &mut ptr.0) };
+            let result = unsafe { uci_set(self.ctx, ptr.deref_mut()) };
             if result != UCI_OK {
                 return Err(Error::Message(format!(
                     "Could not set uci key: {}={}, {}, {}",
@@ -437,11 +435,18 @@ impl Uci {
     ///
     /// If the entry does not exist an `Err` with [`Error::EntryNotFound`] is returned.
     pub fn get(&mut self, key: &str) -> Result<String> {
+        self.get_opt(key).and_then(|v| {
+            v.ok_or_else(|| Error::EntryNotFound {
+                entry_identifier: key.into(),
+            })
+        })
+    }
+
+    // Like [get], but returns Ok(None) if the key doesn't exist
+    pub fn get_opt(&mut self, key: &str) -> Result<Option<String>> {
         let ptr = libuci_locked!(self, { self.get_ptr(key)? });
         if ptr.flags & uci_ptr_UCI_LOOKUP_COMPLETE == 0 {
-            return Err(Error::EntryNotFound {
-                entry_identifier: key.into(),
-            });
+            return Ok(None);
         }
         let last = unsafe { *ptr.last };
         #[allow(non_upper_case_globals)]
@@ -471,7 +476,7 @@ impl Uci {
                     unsafe { CStr::from_ptr(opt.e.name) }.to_str()?,
                     value
                 );
-                Ok(String::from(value))
+                Ok(Some(String::from(value)))
             }
             uci_type_UCI_TYPE_SECTION => {
                 let sect = unsafe { *ptr.s };
@@ -487,7 +492,7 @@ impl Uci {
                     unsafe { CStr::from_ptr(sect.e.name) }.to_str()?,
                     typ
                 );
-                Ok(String::from(typ))
+                Ok(Some(String::from(typ)))
             }
             _ => Err(Error::Message(format!("unsupported type: {}", last.type_))),
         }
@@ -515,11 +520,14 @@ impl Uci {
             option: ptr::null(),
             value: ptr::null(),
         };
-        let raw = libuci_locked!(self, {
+        let key = libuci_locked!(self, {
             let raw = CString::new(identifier)?.into_raw();
             let result = unsafe { uci_lookup_ptr(self.ctx, &mut ptr, raw, true) };
             match result {
-                UCI_OK => (),
+                // Safety: raw was created from CString::into_raw.
+                // raw is not aliased / referenced from anywhere else for the lifetime of the
+                // reconstructed CString.
+                UCI_OK => unsafe { CString::from_raw(raw) },
                 UCI_ERR_NOTFOUND => {
                     return Err(Error::EntryNotFound {
                         entry_identifier: identifier.to_string(),
@@ -535,11 +543,10 @@ impl Uci {
                     )));
                 }
             }
-            raw
         });
         debug!("{:?}", ptr);
         if !ptr.last.is_null() {
-            Ok(UciPtr(ptr, raw))
+            Ok(UciPtr { ptr, _key: key })
         } else {
             Err(Error::Message(format!(
                 "Cannot access null value: {}",
@@ -631,7 +638,7 @@ impl Uci {
                     key, value
                 )));
             }
-            let result = unsafe { uci_add_list(self.ctx, &mut ptr.0) };
+            let result = unsafe { uci_add_list(self.ctx, &mut ptr.ptr) };
             if result != UCI_OK {
                 return Err(Error::Message(format!(
                     "Could not set uci key: {}={}, {}, {}",
@@ -674,8 +681,8 @@ mod tests {
         std::fs::create_dir_all(&config_dir).unwrap();
         std::fs::create_dir_all(&save_dir).unwrap();
 
-        uci.set_config_dir(config_dir.as_os_str().to_str().unwrap())?;
-        uci.set_save_dir(save_dir.as_os_str().to_str().unwrap())?;
+        uci.set_config_dir(&config_dir)?;
+        uci.set_save_dir(&save_dir)?;
         Ok((uci, tmp))
     }
 
@@ -769,6 +776,25 @@ mod tests {
                 entry_identifier: "network".into()
             })
         )
+    }
+
+    #[test]
+    fn get_opt() {
+        let (mut uci, tmp) = setup_uci().unwrap();
+        let config_path = tmp.path().join("config/system");
+        std::fs::write(
+            &config_path,
+            "
+            config system
+	            option timezone 'UTC'
+            ",
+        )
+        .unwrap();
+        let tz = uci.get_opt("system.@system[0].timezone").unwrap();
+        assert_eq!(tz, Some("UTC".into()));
+
+        let hostname = uci.get_opt("system.@system[0].hostname").unwrap();
+        assert_eq!(hostname, None);
     }
 
     #[test]
